@@ -39,7 +39,8 @@ import com.buddy.ncmusic.ui.components.SectionTitle
  * 预留：后续填入实际仓库地址后，下方「项目仓库」卡片会自动变为可点击跳转；
  * 留空时显示"待补充"。
  */
-private const val PROJECT_REPO_URL = "private const val PROJECT_REPO_URL = "https://github.com/3399185897/NCMusic""
+private const val PROJECT_REPO_URL = "https://github.com/3399185897/NCMusic"
+
 
 /** 开源依赖及其许可（均随项目实际依赖梳理） */
 private val OPEN_SOURCE_LICENSES = listOf(
