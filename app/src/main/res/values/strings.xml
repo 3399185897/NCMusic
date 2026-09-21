@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">云音</string>
+    <string name="tab_home">推荐</string>
+    <string name="tab_discover">发现</string>
+    <string name="tab_search">搜索</string>
+    <string name="tab_library">我的</string>
+    <string name="tab_rank">排行榜</string>
+</resources>

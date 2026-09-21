@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌主色（网易云红），仅作为莫奈取色不可用时的 fallback 强调色 -->
+    <color name="brand_red">#D13030</color>
+    <color name="ic_launcher_background">#D13030</color>
+</resources>
