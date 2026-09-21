@@ -20,10 +20,10 @@
 
 ## 📸 界面预览
 
-| 🏠 推荐 | 🔍 发现 | 👤 我的 | ⚙️ 设置 |
+| 🏠 推荐 | 🔍 发现 | 👤 我的 | ▶️ 播放 |
 | :---: | :---: | :---: | :---: |
-| ![推荐](screenshots/home.jpg) | ![发现](screenshots/discover.jpg) | ![我的](screenshots/library.jpg) | ![设置](screenshots/settings.jpg) |
-| 每日推荐 · 雷达推荐 | 搜索历史 · 热搜 · 排行榜 | 我喜欢的 · 最近播放 · 歌单 | 外观 · 音质 · 播放增强 |
+| ![推荐](screenshots/home.jpg) | ![发现](screenshots/discover.jpg) | ![我的](screenshots/library.jpg) | ![播放](screenshots/player.jpg) |
+| 每日推荐 · 雷达推荐 | 搜索历史 · 热搜 · 排行榜 | 我喜欢的 · 最近播放 · 歌单 | 播放器 · 歌词 · 进度控制 |
 
 ---
 
