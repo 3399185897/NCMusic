@@ -116,7 +116,7 @@ app/src/main/java/com/buddy/ncmusic/
 - 不得附加 GPL 之外的额外限制
 
 ```
-Copyright (C) 2026 <请替换为你的名字或 GitHub 用户名>
+Copyright (C) 2026 Canelé (3399185897)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
