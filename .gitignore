@@ -1,0 +1,36 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+/app/build
+
+# ---- 签名密钥：绝对不能提交 ----
+*.jks
+*.keystore
+keystore.properties
+
+# ---- 本地环境 ----
+.kotlin/
+
+# ---- 构建 / 下载的临时产物 ----
+*.zip
+*.tar.gz
+*_log.txt
+build_log.txt
+dl_*.py
+download_*.py
+fix_imports.py
+addimports.py
+patch_*.py
+prepare_opensource.py
+*log*.txt
+*s_*.py
+weapi-test.js
+ncmusic-release.keystore
+*.apk
