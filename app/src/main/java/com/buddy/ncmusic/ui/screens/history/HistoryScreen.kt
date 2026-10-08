@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.history
 
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -64,6 +66,7 @@ fun HistoryScreen(
     onOpenArtist: (Long) -> Unit = {},
     vm: HistoryViewModel = viewModel(),
 ) {
+    val listState = rememberLazyListState()
     val songs by vm.songs.collectAsState()
     val loading by vm.loading.collectAsState()
 
@@ -89,10 +92,15 @@ fun HistoryScreen(
                 )
             }
         } else {
-            LazyColumn(Modifier.fillMaxSize()) {
+            ListWithScrollIndicator(listState = listState, showIndicator = false) {
+                LazyColumn(
+                state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
                 itemsIndexed(songs) { index, song ->
                     SongListItem(song = song, onClick = { onPlay(songs, index) }, onArtistClick = onOpenArtist)
                 }
+            }
             }
         }
     }

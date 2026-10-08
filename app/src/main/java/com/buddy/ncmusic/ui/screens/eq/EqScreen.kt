@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.eq
 
+import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -114,7 +115,7 @@ fun EqScreen(onBack: () -> Unit) {
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp)
                         .height(220.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .clip(AppShapes.of(16.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -174,7 +175,7 @@ fun EqScreen(onBack: () -> Unit) {
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .height(240.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(AppShapes.of(16.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
                     .pointerInput(tick, bandCount) {
                         fun handle(px: Float, py: Float) {

@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.discover
 
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
+import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.clickable
@@ -128,7 +130,10 @@ fun DiscoverScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
+                LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+                    ) {
                     items(results) { song ->
                         SongListItem(
                             song = song,
@@ -142,7 +147,10 @@ fun DiscoverScreen(
         return
     }
 
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+    ) {
         item {
             SearchField(
                 query = query,
@@ -232,7 +240,7 @@ private fun RankCard(
         modifier = Modifier
             .width(pageWidth)
             .padding(end = 8.dp)
-            .clip(RoundedCornerShape(16.dp)),
+            .clip(AppShapes.of(16.dp)),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -247,7 +255,7 @@ private fun RankCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(AppShapes.of(10.dp))
                     .clickable { onPlay(rank.songs, index) }
                     .padding(vertical = 5.dp, horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -261,7 +269,7 @@ private fun RankCard(
                 )
                 CoverImage(
                     url = song.coverUrl,
-                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)),
+                    modifier = Modifier.size(40.dp).clip(AppShapes.of(8.dp)),
                     contentDescription = song.name,
                 )
                 Spacer(Modifier.width(10.dp))
@@ -304,7 +312,7 @@ private fun SearchField(
                 Icon(Icons.Filled.Mic, contentDescription = "听歌识曲")
             }
         },
-        shape = RoundedCornerShape(28.dp),
+        shape = AppShapes.of(28.dp),
         singleLine = true,
     )
 }

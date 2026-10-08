@@ -34,3 +34,7 @@ prepare_opensource.py
 weapi-test.js
 ncmusic-release.keystore
 *.apk
+
+# ---- 但 releases/ 下用于分发编译产物的 APK 需要提交 ----
+!releases/
+!releases/*.apk

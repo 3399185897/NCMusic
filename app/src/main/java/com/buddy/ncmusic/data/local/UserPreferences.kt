@@ -18,6 +18,8 @@ data class UserState(
     val userId: Long = 0,
     val nickname: String = "",
     val avatarUrl: String = "",
+    /** 账号等级（网易云 level） */
+    val level: Int = 0,
     /** 主题模式：system / light / dark */
     val themeMode: String = "system",
     /** 是否启用莫奈动态取色 */
@@ -65,6 +67,14 @@ data class UserState(
     val lyricLocked: Boolean = false,
     /** 自定义下载 / 缓存目录（SAF URI，空 = 应用私有目录） */
     val cacheDirUri: String = "",
+    /** 歌词页自动对齐：进入时定位到当前播放歌词，滑动后自动切回 */
+    val lyricAutoAlign: Boolean = true,
+    /** 播放器封面取色：根据封面主色渲染播放器与悬浮岛；关闭后统一使用主题色 */
+    val playerColorEnabled: Boolean = true,
+    /** 切歌淡入淡出：切换歌曲时音量渐变过渡 */
+    val crossfadeEnabled: Boolean = false,
+    /** 淡入淡出时长（秒，1~8） */
+    val crossfadeSeconds: Int = 3,
 ) {
     val isLoggedIn: Boolean
         get() = cookie.isNotBlank() && userId > 0
@@ -78,6 +88,7 @@ class UserPreferences(private val context: Context) {
         val USER_ID = longPreferencesKey("user_id")
         val NICKNAME = stringPreferencesKey("nickname")
         val AVATAR = stringPreferencesKey("avatar_url")
+        val LEVEL = intPreferencesKey("account_level")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val CUSTOM_COLOR = longPreferencesKey("custom_color")
@@ -102,6 +113,10 @@ class UserPreferences(private val context: Context) {
         val LYRIC_Y = intPreferencesKey("lyric_y")
         val LYRIC_LOCKED = booleanPreferencesKey("lyric_locked")
         val CACHE_DIR_URI = stringPreferencesKey("cache_dir_uri")
+        val LYRIC_AUTO_ALIGN = booleanPreferencesKey("lyric_auto_align")
+        val PLAYER_COLOR_ENABLED = booleanPreferencesKey("player_color_enabled")
+        val CROSSFADE_ENABLED = booleanPreferencesKey("crossfade_enabled")
+        val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
     }
 
     val userStateFlow: Flow<UserState> = context.dataStore.data.map { p ->
@@ -110,6 +125,7 @@ class UserPreferences(private val context: Context) {
             userId = p[Keys.USER_ID] ?: 0,
             nickname = p[Keys.NICKNAME] ?: "",
             avatarUrl = p[Keys.AVATAR] ?: "",
+            level = p[Keys.LEVEL] ?: 0,
             themeMode = p[Keys.THEME_MODE] ?: "system",
             dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
             customColor = p[Keys.CUSTOM_COLOR] ?: 0L,
@@ -136,6 +152,10 @@ class UserPreferences(private val context: Context) {
             lyricY = p[Keys.LYRIC_Y] ?: 320,
             lyricLocked = p[Keys.LYRIC_LOCKED] ?: false,
             cacheDirUri = p[Keys.CACHE_DIR_URI] ?: "",
+            lyricAutoAlign = p[Keys.LYRIC_AUTO_ALIGN] ?: true,
+            playerColorEnabled = p[Keys.PLAYER_COLOR_ENABLED] ?: true,
+            crossfadeEnabled = p[Keys.CROSSFADE_ENABLED] ?: false,
+            crossfadeSeconds = p[Keys.CROSSFADE_SECONDS] ?: 3,
         )
     }
 
@@ -182,6 +202,26 @@ class UserPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.LYRIC_FONT_SIZE] = sp }
     }
 
+    suspend fun setLyricAutoAlign(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.LYRIC_AUTO_ALIGN] = enabled }
+    }
+
+    suspend fun setLevel(level: Int) {
+        context.dataStore.edit { it[Keys.LEVEL] = level }
+    }
+
+    suspend fun setPlayerColorEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.PLAYER_COLOR_ENABLED] = enabled }
+    }
+
+    suspend fun setCrossfadeEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.CROSSFADE_ENABLED] = enabled }
+    }
+
+    suspend fun setCrossfadeSeconds(seconds: Int) {
+        context.dataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds }
+    }
+
     suspend fun setCacheDirUri(uri: String) {
         context.dataStore.edit { it[Keys.CACHE_DIR_URI] = uri }
     }
@@ -197,12 +237,24 @@ class UserPreferences(private val context: Context) {
         }
     }
 
-    suspend fun saveLogin(userId: Long, nickname: String, avatarUrl: String, cookie: String) {
+    /**
+     * 保存登录态。
+     *
+     * [level] 为账号等级；登录时一并写入，避免进入设置页后才显示正确等级。
+     */
+    suspend fun saveLogin(
+        userId: Long,
+        nickname: String,
+        avatarUrl: String,
+        cookie: String,
+        level: Int = 0,
+    ) {
         context.dataStore.edit { p ->
             p[Keys.COOKIE] = cookie
             p[Keys.USER_ID] = userId
             p[Keys.NICKNAME] = nickname
             p[Keys.AVATAR] = avatarUrl
+            p[Keys.LEVEL] = level
         }
     }
 
@@ -212,6 +264,7 @@ class UserPreferences(private val context: Context) {
             p.remove(Keys.USER_ID)
             p.remove(Keys.NICKNAME)
             p.remove(Keys.AVATAR)
+            p.remove(Keys.LEVEL)
         }
     }
 

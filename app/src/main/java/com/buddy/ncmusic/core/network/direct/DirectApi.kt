@@ -96,6 +96,17 @@ class DirectApi {
             }
         }
 
+    /**
+     * 「私人雷达」的固定歌单 id。
+     *
+     * 网易云没有公开此能力的 API，社区通行做法即固定 id + 登录 cookie。
+     * 该 id 实测返回的歌单名为「私人雷达」。
+     */
+    private val RADAR_PLAYLIST_ID: Long = 3136952023L
+
+    /** 私人雷达在返回列表中的位置（对应拼贴墙最大的 80×80 方块） */
+    private val RADAR_INDEX = 2
+
     private suspend fun getPlain(path: String): JsonObject = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(BASE + path).get().common().build()
         client.newCall(req).execute().use { resp ->
@@ -233,6 +244,73 @@ class DirectApi {
             },
         )
         return root["result"]?.arr()?.mapNotNull { it.toPlaylist() } ?: emptyList()
+    }
+
+    /**
+     * 雷达歌单（个性化歌单）。
+     *
+     * 与「推荐歌单」共用个性化推荐体系，但走独立端点并指定批次，
+     * 因此二者内容不重复，适合作为首页另一个歌单区块。
+     */
+    /**
+     * 雷达歌单（首页拼贴墙的数据源）。
+     *
+     * ## 组成
+     *
+     * 1. **第一位固定为「私人雷达」**
+     *    网易云**未公开**该能力的 API，社区通行做法是直接取固定歌单 id。
+     *    实测 `v6/playlist/detail` 返回的歌单名确为「私人雷达」。
+     *    该歌单需要登录态才有曲目内容，但歌单元信息（名称 / 封面）匿名即可取到，
+     *    因此这里用 `runCatching` 包裹 —— **失败就跳过，不影响其余 19 个**。
+     *
+     * 2. **其余位置用「推荐歌单」补齐**
+     *    为保证拼贴墙 18 个方块封面互不重复，多取 4 条候选再按 id 去重。
+     *
+     * @param limit 期望返回的总数（首页拼贴墙需要 18 个方块，故默认 20）
+     */
+    suspend fun radarPlaylists(limit: Int = 20): List<Playlist> {
+        val result = mutableListOf<Playlist>()
+
+        // ---- 1) 私人雷达（非关键路径，失败静默跳过）----
+        // 插到索引 2：首页拼贴墙的方块顺序中，第 3 个（index 2）是最大的 80×80 方块，
+        // 把私人雷达放在这里视觉上最醒目，符合它「核心推荐」的定位。
+        runCatching {
+            val root = getPlain("/api/v6/playlist/detail?id=$RADAR_PLAYLIST_ID")
+            root["playlist"]?.toPlaylist()
+        }.getOrNull()?.let { radar ->
+            if (result.size >= RADAR_INDEX) result.add(RADAR_INDEX, radar) else result += radar
+        }
+
+        // ---- 2) 推荐歌单补齐 + 去重 ----
+        val need = (limit - result.size).coerceAtLeast(0)
+        if (need > 0) {
+            // 多取 4 条作为去重/失效的缓冲
+            val root = getPlain("/api/personalized/playlist?limit=${limit + 4}")
+            val recommendations = root["result"]?.arr()?.mapNotNull { it.toPlaylist() } ?: emptyList()
+            result += recommendations
+                .filterNot { rec -> result.any { it.id == rec.id } }
+                .take(need)
+        }
+
+        return result
+    }
+
+    /**
+     * 为你推荐（个性化）。
+     *
+     * 与「每日推荐」同源，但额外传 `afresh = true` 让服务端重新挑选一批，
+     * 因此两者内容不重复 —— 适合作为首页的第二个个性化推荐区块。
+     */
+    suspend fun forYouSongs(): List<Song> {
+        val root = weapi(
+            "/weapi/v1/discovery/recommend/songs",
+            buildJsonObject {
+                put("afresh", true)
+                put("csrf_token", "")
+            },
+        )
+        return root["data"]?.safeObject()?.get("dailySongs")?.arr()
+            ?.mapNotNull { it.toSong() } ?: emptyList()
     }
 
     suspend fun recommendSongs(): List<Song> {
@@ -470,6 +548,14 @@ class DirectApi {
         profile = profileOf(this),
         account = accountOf(this),
     )
+
+    /** 账号详情：主要用于获取等级（level） */
+    suspend fun userDetail(uid: Long): Int {
+        val root = getPlain("/api/v1/user/detail/$uid")
+        return root["level"]?.str()?.toIntOrNull()
+            ?: root["profile"]?.safeObject()?.get("level")?.str()?.toIntOrNull()
+            ?: 0
+    }
 
     suspend fun loginStatus(): LoginStatusResponse {
         val root = weapi(

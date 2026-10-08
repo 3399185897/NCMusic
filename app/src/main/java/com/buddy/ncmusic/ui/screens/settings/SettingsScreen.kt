@@ -1,5 +1,27 @@
 package com.buddy.ncmusic.ui.screens.settings
 
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.text.font.FontWeight
+import com.buddy.ncmusic.ui.components.CoverImage
+import com.buddy.ncmusic.util.ApiResult
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Add
+import com.buddy.ncmusic.ui.theme.AppShapes
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.rotate
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.items
+import com.buddy.ncmusic.ui.theme.ColorRevealState
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
@@ -115,6 +137,13 @@ class SettingsViewModel : ViewModel() {
             _usbStatus.value = UsbAudioManager.apply(context, s.usbExclusive)
             if (s.usbExclusive) PlaybackManager.applyUsbExclusive(true)
         }
+        // 已登录但本地无等级（旧数据 / 登录时拉取失败）→ 补拉一次
+        viewModelScope.launch {
+            val s = prefs.userStateFlow.first()
+            if (s.isLoggedIn && s.level <= 0) {
+                NCMusicApp.instance.musicRepository.refreshUserLevel(s.userId)
+            }
+        }
     }
 
     fun refreshCacheSize() {
@@ -137,19 +166,37 @@ class SettingsViewModel : ViewModel() {
         return dir.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
     }
 
-    fun setThemeMode(v: String) { viewModelScope.launch { prefs.setThemeMode(v) } }
+    /**
+     * 深色模式 / 自定义主题色 / 莫奈取色 —— 三者互斥：
+     * - 开「深色模式」→ 要固定深色配色，关闭莫奈取色并清空自定义色
+     * - 开「跟随系统」→ 保留自动取色能力
+     * - 关「深色模式」→ 回退到浅色（light）
+     */
+    fun setThemeMode(v: String) {
+        viewModelScope.launch {
+            prefs.setThemeMode(v)
+            if (v == "dark" || v == "light") {
+                prefs.setDynamicColor(false)
+                prefs.setCustomColor(0L)
+            }
+        }
+    }
+
     fun setDynamicColor(v: Boolean) {
         viewModelScope.launch {
             prefs.setDynamicColor(v)
-            // 开启莫奈取色时清空自定义色，二者互斥
-            if (v) prefs.setCustomColor(0L)
+            // 开启莫奈取色 → 清空自定义色，并把深浅模式交还系统
+            if (v) {
+                prefs.setCustomColor(0L)
+                prefs.setThemeMode("system")
+            }
         }
     }
 
     fun setCustomColor(v: Long) {
         viewModelScope.launch {
             prefs.setCustomColor(v)
-            // 选择自定义色时自动关闭莫奈取色
+            // 选择自定义色 → 关闭莫奈取色
             if (v != 0L) prefs.setDynamicColor(false)
         }
     }
@@ -215,6 +262,22 @@ class SettingsViewModel : ViewModel() {
 
     fun setCacheDirUri(uri: String) {
         viewModelScope.launch { prefs.setCacheDirUri(uri) }
+    }
+
+    fun setLyricAutoAlign(enabled: Boolean) {
+        viewModelScope.launch { prefs.setLyricAutoAlign(enabled) }
+    }
+
+    fun setPlayerColorEnabled(enabled: Boolean) {
+        viewModelScope.launch { prefs.setPlayerColorEnabled(enabled) }
+    }
+
+    fun setCrossfadeEnabled(enabled: Boolean) {
+        viewModelScope.launch { prefs.setCrossfadeEnabled(enabled) }
+    }
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        viewModelScope.launch { prefs.setCrossfadeSeconds(seconds) }
     }
 
     /** 开关桌面歌词悬浮窗（必要时跳转悬浮窗权限页） */
@@ -323,6 +386,10 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenEq: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    /** 初始分类：ALL = 分类总览页；其他 = 该分类的子页 */
+    initialGroup: SettingsGroup = SettingsGroup.ALL,
+    /** 点击分类卡片时回调（由导航层跳转到对应子页） */
+    onOpenGroup: (SettingsGroup) -> Unit = {},
     vm: SettingsViewModel = viewModel(),
 ) {
     val state by vm.userState.collectAsState(initial = UserState())
@@ -334,6 +401,8 @@ fun SettingsScreen(
     val context = LocalContext.current
 
     var showTimerDialog by remember { mutableStateOf(false) }
+    // 当前分类固定为导航传入的分类（不再用顶部标签切换）
+    val selectedGroup = initialGroup
     var timerInput by remember { mutableStateOf("") }
     var showCacheDialog by remember { mutableStateOf(false) }
     var cacheInput by remember { mutableStateOf("") }
@@ -390,51 +459,60 @@ fun SettingsScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
             }
-            Text("设置", style = MaterialTheme.typography.titleMedium)
+            Text(
+                // 总览页显示「设置」；子页显示该分类名称
+                text = if (selectedGroup == SettingsGroup.ALL) "设置" else selectedGroup.label,
+                style = MaterialTheme.typography.titleMedium,
+            )
         }
 
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // ---------- 分类总览（仅总览页显示）----------
+            // 总览页**只**呈现分类卡片，不渲染任何具体设置项 —— 与 PixelPlayer 结构一致
+            if (selectedGroup == SettingsGroup.ALL) {
+                SettingsOverview(onOpenGroup = { onOpenGroup(it) })
+            } else {
             // ---------- 外观 ----------
-            SectionCard("外观") {
-                // 深浅模式横向排列
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    themeOptions.forEach { (value, label) ->
-                        FilterChip(
-                            selected = state.themeMode == value,
-                            onClick = { vm.setThemeMode(value) },
-                            label = { Text(label) },
-                        )
-                    }
-                }
+            SectionCard(
+                title = "外观",
+                group = SettingsGroup.APPEARANCE,
+                selected = selectedGroup,
+            ) {
+                // 深色模式：两个开关（深色模式 / 跟随系统）
+                // 三者互斥：深色模式、莫奈取色、自定义主题色
+                SwitchRow(
+                    title = "深色模式",
+                    subtitle = "固定使用深色配色（关闭则使用浅色）",
+                    checked = state.themeMode == "dark",
+                    onCheckedChange = { on -> vm.setThemeMode(if (on) "dark" else "light") },
+                )
+                SwitchRow(
+                    title = "跟随系统",
+                    subtitle = "深浅色随系统设置自动切换",
+                    checked = state.themeMode == "system",
+                    onCheckedChange = { on ->
+                        if (on) vm.setThemeMode("system")
+                        // 关闭「跟随系统」时回到浅色，避免状态悬空
+                        else vm.setThemeMode("light")
+                    },
+                )
+                Text(
+                    text = "深色模式、自定义主题色、莫奈取色三者互斥",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 SwitchRow(
                     title = "莫奈动态取色",
                     subtitle = "跟随系统壁纸取色（Android 12+）",
                     checked = state.dynamicColor,
                     onCheckedChange = vm::setDynamicColor,
                 )
-                var colorExpanded by remember { mutableStateOf(false) }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { colorExpanded = !colorExpanded }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "自定义主题色",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    Text(
-                        text = if (colorExpanded) "收起 ▲" else "展开 ▼",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                if (colorExpanded) {
+                Text(
+                    "自定义主题色",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
                 FlowRow(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -442,64 +520,90 @@ fun SettingsScreen(
                 ) {
                     presetColors.forEach { (argb, _) ->
                         val selected = state.customColor == argb
+                        // 记录该色块在 root 中的中心坐标，用于颜色扩散动画起点
+                        var centerInRoot by remember { mutableStateOf(Offset.Zero) }
                         Box(
                             modifier = Modifier
                                 .size(34.dp)
+                                .onGloballyPositioned { coords ->
+                                    centerInRoot = coords.positionInRoot() +
+                                        Offset(coords.size.width / 2f, coords.size.height / 2f)
+                                }
                                 .background(Color(argb), CircleShape)
                                 .border(
                                     width = if (selected) 3.dp else 0.dp,
                                     color = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
                                     shape = CircleShape,
                                 )
-                                .clickable { vm.setCustomColor(if (selected) 0L else argb) },
+                                .clickable {
+                                    // 从点击处扩散新颜色
+                                    ColorRevealState.launch(centerInRoot, Color(argb))
+                                    vm.setCustomColor(if (selected) 0L else argb)
+                                },
                         )
                     }
                 }
                 Text(
-                    text = "再次点击已选颜色可恢复默认；与莫奈取色互斥",
+                    text = "再次点击已选颜色可恢复默认",
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
+                SwitchRow(
+                    title = "播放器封面取色",
+                    subtitle = "根据封面主色渲染播放器与悬浮岛；关闭后统一使用主题色",
+                    checked = state.playerColorEnabled,
+                    onCheckedChange = vm::setPlayerColorEnabled,
+                )
+
+            // ---------- 启动页（自「行为」页移入）----------
+            SectionCard(
+                title = "启动页",
+                group = SettingsGroup.APPEARANCE,
+                selected = selectedGroup,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    startPageOptions.forEach { (value, label) ->
+                        FilterChip(
+                            selected = state.startPage == value,
+                            onClick = { vm.setStartPage(value) },
+                            label = { Text(label) },
+                        )
+                    }
                 }
+            }
+
+
+
             }
 
             // ---------- 音质（合并为一个可展开控件） ----------
-            SectionCard("音质设置") {
-                var qualityExpanded by remember { mutableStateOf(false) }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { qualityExpanded = !qualityExpanded }
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            text = "默认：${qualityLabelOf(state.quality)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text = "WiFi ${qualityLabelOf(state.wifiQuality)} · 流量 ${qualityLabelOf(state.mobileQuality)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Text(
-                        text = if (qualityExpanded) "收起 ▲" else "展开 ▼",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                if (qualityExpanded) {
-                    QualitySubGroup("默认音质", state.quality, vm::setQuality)
-                    QualitySubGroup("WiFi 下最高音质", state.wifiQuality, vm::setWifiQuality)
-                    QualitySubGroup("移动流量下最高音质", state.mobileQuality, vm::setMobileQuality)
-                }
+            SectionCard(
+                title = "音质设置",
+                group = SettingsGroup.AUDIO,
+                selected = selectedGroup,
+            ) {
+                // 不折叠；仅保留 WiFi / 流量两档（默认音质已移除）
+                QualitySubGroup("WiFi 下最高音质", state.wifiQuality, vm::setWifiQuality)
+                QualitySubGroup("移动流量下最高音质", state.mobileQuality, vm::setMobileQuality)
+                Text(
+                    text = "播放时按当前网络类型自动选择对应音质上限",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // ---------- 播放增强 ----------
-            SectionCard("播放增强") {
+            SectionCard(
+                title = "播放增强",
+                group = SettingsGroup.PLAYBACK,
+                selected = selectedGroup,
+            ) {
                 SwitchRow(
                     title = "音量均衡",
                     subtitle = "统一不同歌曲响度（响度增强）",
@@ -519,6 +623,7 @@ fun SettingsScreen(
                                 gain = it
                                 vm.setVolumeGain(it.toInt())
                             },
+                            // 增益保持连续可调（0.01 dB 精度），故不设 steps
                             valueRange = 0f..1200f,
                             modifier = Modifier.weight(1f).padding(start = 8.dp),
                         )
@@ -555,10 +660,138 @@ fun SettingsScreen(
                     state.decodeMode,
                     vm::setDecodeMode,
                 )
+
+                SwitchRow(
+                    title = "切歌淡入淡出",
+                    subtitle = "切换歌曲时音量渐变过渡，衔接更自然",
+                    checked = state.crossfadeEnabled,
+                    onCheckedChange = vm::setCrossfadeEnabled,
+                )
+                if (state.crossfadeEnabled) {
+                    Text(
+                        "淡入淡出时长：${state.crossfadeSeconds} 秒",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    RoundSlider(
+                        value = state.crossfadeSeconds.toFloat(),
+                        onValueChange = { vm.setCrossfadeSeconds(it.toInt().coerceIn(1, 8)) },
+                        valueRange = 1f..8f,
+                        steps = 6,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                }
             }
 
+            // ---------- 定时关闭（自「行为」页移入）----------
+            // ---------- 歌词 ----------
+            SectionCard(
+                title = "歌词",
+                group = SettingsGroup.LYRIC,
+                selected = selectedGroup,
+            ) {
+                SwitchRow(
+                    title = "自动对齐当前歌词",
+                    subtitle = "进入歌词页时自动定位到正在播放的歌词；滑动浏览后停止操作 3 秒自动切回",
+                    checked = state.lyricAutoAlign,
+                    onCheckedChange = vm::setLyricAutoAlign,
+                )
+            }
+
+            // ---------- 缓存位置 ----------
+            val dirPicker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocumentTree(),
+            ) { uri ->
+                uri?.let {
+                    runCatching {
+                        context.contentResolver.takePersistableUriPermission(
+                            it,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                        )
+                    }
+                    vm.setCacheDirUri(it.toString())
+                }
+            }
+            SectionCard(
+                title = "缓存位置",
+                group = SettingsGroup.STORAGE,
+                selected = selectedGroup,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("下载 / 缓存目录", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            text = state.cacheDirUri.ifBlank { "默认（应用私有目录）" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                        )
+                    }
+                }
+                Row(Modifier.padding(horizontal = 12.dp)) {
+                    TextButton(onClick = { dirPicker.launch(null) }) { Text("修改位置…") }
+                    if (state.cacheDirUri.isNotBlank()) {
+                        TextButton(onClick = { vm.setCacheDirUri("") }) { Text("恢复默认") }
+                    }
+                }
+            }
+
+            SectionCard(
+                title = "定时关闭",
+                group = SettingsGroup.PLAYBACK,
+                selected = selectedGroup,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (state.timerMinutes <= 0) "未开启"
+                        else "${state.timerMinutes} 分钟后停止播放",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (state.timerMinutes > 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(
+                        onClick = {
+                            timerInput = if (state.timerMinutes > 0) state.timerMinutes.toString() else ""
+                            showTimerDialog = true
+                        },
+                    ) { Text("自定义…") }
+                }
+                RoundSlider(
+                    value = state.timerMinutes.toFloat().coerceIn(0f, 180f),
+                    // 值由 store 驱动；步长交给 Slider 的 steps 处理，
+                    // 避免在 onValueChange 里再量化导致「滑块位置与数字不同步」
+                    onValueChange = { vm.setTimerMinutes(it.toInt()) },
+                    valueRange = 0f..180f,
+                    steps = 35,                       // 0,5,10,…,180 共 37 个值
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("关闭", style = MaterialTheme.typography.labelSmall)
+                    Text("30", style = MaterialTheme.typography.labelSmall)
+                    Text("60", style = MaterialTheme.typography.labelSmall)
+                    Text("120", style = MaterialTheme.typography.labelSmall)
+                    Text("180 分钟", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+
             // ---------- 桌面歌词 ----------
-            SectionCard("桌面歌词") {
+            SectionCard(
+                title = "桌面歌词",
+                group = SettingsGroup.LYRIC,
+                selected = selectedGroup,
+            ) {
                 SwitchRow(
                     title = "歌词悬浮窗",
                     subtitle = overlayStatus.ifBlank { "在桌面显示当前歌词（需悬浮窗权限）" },
@@ -606,6 +839,7 @@ fun SettingsScreen(
                     value = state.lyricFontSize.toFloat(),
                     onValueChange = { vm.setLyricFontSize(it.toInt()) },
                     valueRange = 12f..34f,
+                    steps = 21,                       // 12,13,…,34 共 23 个值
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
 
@@ -617,103 +851,12 @@ fun SettingsScreen(
                 )
             }
 
-            // ---------- 定时关闭 ----------
-            // ---------- 缓存位置 ----------
-            val dirPicker = rememberLauncherForActivityResult(
-                ActivityResultContracts.OpenDocumentTree(),
-            ) { uri ->
-                uri?.let {
-                    runCatching {
-                        context.contentResolver.takePersistableUriPermission(
-                            it,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                        )
-                    }
-                    vm.setCacheDirUri(it.toString())
-                }
-            }
-            SectionCard("缓存位置") {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("下载 / 缓存目录", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            text = state.cacheDirUri.ifBlank { "默认（应用私有目录）" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                        )
-                    }
-                }
-                Row(Modifier.padding(horizontal = 12.dp)) {
-                    TextButton(onClick = { dirPicker.launch(null) }) { Text("修改位置…") }
-                    if (state.cacheDirUri.isNotBlank()) {
-                        TextButton(onClick = { vm.setCacheDirUri("") }) { Text("恢复默认") }
-                    }
-                }
-            }
-
-            SectionCard("定时关闭") {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = if (state.timerMinutes <= 0) "未开启"
-                        else "${state.timerMinutes} 分钟后停止播放",
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (state.timerMinutes > 0) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TextButton(
-                        onClick = {
-                            timerInput = if (state.timerMinutes > 0) state.timerMinutes.toString() else ""
-                            showTimerDialog = true
-                        },
-                    ) { Text("自定义…") }
-                }
-                RoundSlider(
-                    value = state.timerMinutes.toFloat().coerceIn(0f, 180f),
-                    onValueChange = { vm.setTimerMinutes((it / 5).toInt() * 5) },
-                    valueRange = 0f..180f,
-                    modifier = Modifier.padding(horizontal = 16.dp),
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("关闭", style = MaterialTheme.typography.labelSmall)
-                    Text("30", style = MaterialTheme.typography.labelSmall)
-                    Text("60", style = MaterialTheme.typography.labelSmall)
-                    Text("120", style = MaterialTheme.typography.labelSmall)
-                    Text("180 分钟", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-
-            // ---------- 启动页 ----------
-            SectionCard("启动页") {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    startPageOptions.forEach { (value, label) ->
-                        FilterChip(
-                            selected = state.startPage == value,
-                            onClick = { vm.setStartPage(value) },
-                            label = { Text(label) },
-                        )
-                    }
-                }
-            }
-
-
-
             // ---------- 缓存 ----------
-            SectionCard("缓存") {
+            SectionCard(
+                title = "缓存",
+                group = SettingsGroup.STORAGE,
+                selected = selectedGroup,
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -749,10 +892,16 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+                // 范围取 1GB..10GB、每 1GB 一档。
+                //
+                // 修复「滑块与底部数字对不上」：原先刻度标签用 SpaceBetween 等距排列，
+                // 但取值 128/2048/5120/10240 并非等距（2GB 实际在 19% 位置，标签却画在 33%），
+                // 于是标签与滑块位置完全错位。改为等距取值后，标签与刻度严格对应。
                 RoundSlider(
-                    value = state.maxCacheMb.toFloat().coerceIn(128f, 10240f),
-                    onValueChange = { vm.setMaxCacheMb((it / 128).toInt() * 128) },
-                    valueRange = 128f..10240f,
+                    value = state.maxCacheMb.toFloat().coerceIn(1024f, 10240f),
+                    onValueChange = { vm.setMaxCacheMb(it.toInt()) },
+                    valueRange = 1024f..10240f,
+                    steps = 8,                        // 1,2,…,10 GB 共 10 档
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )
                 Row(
@@ -761,9 +910,10 @@ fun SettingsScreen(
                         .padding(horizontal = 24.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Text("128 MB", style = MaterialTheme.typography.labelSmall)
-                    Text("2 GB", style = MaterialTheme.typography.labelSmall)
-                    Text("5 GB", style = MaterialTheme.typography.labelSmall)
+                    // 等距四档：1 / 4 / 7 / 10 GB —— 与滑块位置严格对应
+                    Text("1 GB", style = MaterialTheme.typography.labelSmall)
+                    Text("4 GB", style = MaterialTheme.typography.labelSmall)
+                    Text("7 GB", style = MaterialTheme.typography.labelSmall)
                     Text("10 GB", style = MaterialTheme.typography.labelSmall)
                 }
                 TextButton(
@@ -776,12 +926,56 @@ fun SettingsScreen(
             }
 
             // ---------- 账号 ----------
-            if (state.isLoggedIn) {
-                SectionCard("账号") {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            SectionCard(
+                title = "账号",
+                group = SettingsGroup.ACCOUNT,
+                selected = selectedGroup,
+            ) {
+                if (state.isLoggedIn) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CoverImage(
+                            url = state.avatarUrl,
+                            modifier = Modifier.size(56.dp).clip(CircleShape),
+                            contentDescription = state.nickname,
+                        )
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = state.nickname.ifBlank { "网易云用户" },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Spacer(Modifier.height(5.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(AppShapes.pill)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.13f))
+                                    .padding(horizontal = 10.dp, vertical = 3.dp),
+                            ) {
+                                Text(
+                                    text = "Lv.${if (state.level > 0) state.level else 1}",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                         OutlinedButton(onClick = vm::logout) { Text("退出登录") }
                     }
+                } else {
+                    Text(
+                        text = "未登录",
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
+                Spacer(Modifier.height(6.dp))
             }
 
             // ---------- 关于（入口，置于最底部） ----------
@@ -792,52 +986,83 @@ fun SettingsScreen(
                         .versionName
                 }.getOrNull().orEmpty().ifBlank { "1.0.0" }
             }
-            SectionCard("关于") {
+            SectionCard(
+                title = "关于",
+                group = SettingsGroup.ABOUT,
+                selected = selectedGroup,
+            ) {
+                // 概要信息 + 入口，点击进入详细关于页（项目仓库 / 许可等）
+                AboutRow("应用名称", "NCMusic")
+                AboutRow("版本", appVersion)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable(onClick = onOpenAbout)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("关于 NCMusic", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            text = "版本 $appVersion · 开源许可",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        text = "查看详细信息",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                     Text(
                         "›",
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Spacer(Modifier.height(6.dp))
             }
 
             Spacer(Modifier.size(32.dp))
+            }
         }
     }
 }
 
 /** 设置分组卡片：统一背景、圆角与标题色，提升模块辨识度 */
 @Composable
-private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun SectionCard(
+    title: String,
+    group: SettingsGroup,
+    selected: SettingsGroup,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    // 「全部」视图显示所有分类；否则只显示当前分类
+    if (selected != SettingsGroup.ALL && selected != group) return
+    val titleColor = groupAccent(group)
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+            // MD3 容器色阶：设置分组属于「次要容器」，
+            // 使用 surfaceContainerHigh 而非 surfaceVariant ——
+            // 后者是 M2 遗留角色，在 MD3 中语义已改为「非主色表面」，用它做卡片底色会导致明度关系失准
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(Modifier.padding(vertical = 6.dp)) {
-            Text(
-                text = title,
+            Row(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // 分类色条：让当前分类一眼可辨
+                Box(
+                    modifier = Modifier
+                        .width(3.dp)
+                        .height(14.dp)
+                        .clip(AppShapes.of(2.dp))
+                        .background(titleColor),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = titleColor,
+                )
+            }
             content()
         }
     }
@@ -863,7 +1088,43 @@ private fun SwitchRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        // 拇指内嵌 ✓ / ✗ 图标并带淡入淡出：状态一眼可辨，无需看轨道颜色
+        //
+        // 配色严格对齐 m3.material.io/components/switch 的角色映射：
+        //   选中 —— track=primary / thumb=onPrimary / icon=onPrimaryContainer
+        //   未选中 —— track=surfaceContainerHighest / thumb=outline / icon=surfaceContainerHighest
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            thumbContent = {
+                AnimatedContent(
+                    targetState = checked,
+                    transitionSpec = { fadeIn(tween(110)) togetherWith fadeOut(tween(110)) },
+                    label = "switch_thumb",
+                ) { on ->
+                    Icon(
+                        // 核心图标库无 Check，用 Add 旋转 45° 得到等效的 ✓
+                        imageVector = if (on) Icons.Default.Add else Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(SwitchDefaults.IconSize)
+                            .rotate(if (on) 45f else 0f),
+                    )
+                }
+            },
+            colors = SwitchDefaults.colors(
+                // ---- 选中态 ----
+                checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                checkedBorderColor = MaterialTheme.colorScheme.primary,
+                checkedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                // ---- 未选中态 ----
+                uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                uncheckedBorderColor = MaterialTheme.colorScheme.outline,
+                uncheckedIconColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            ),
+        )
     }
 }
 
@@ -891,7 +1152,11 @@ private fun <T> OptionGroup(
 }
 
 /** 音质子分组（默认 / WiFi / 流量） */
-/** 圆形滑块：覆盖 Material3 默认的竖条 thumb */
+/**
+ * 设置页统一滑块 —— **MD3 规范样式**：
+ * - thumb 为**竖条**（4×36dp 圆角矩形），而非圆点
+ * - 轨道内部另有一个**跟随进度的小圆点**，增强刻度感
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RoundSlider(
@@ -909,15 +1174,77 @@ private fun RoundSlider(
         steps = steps,
         enabled = enabled,
         modifier = modifier,
+        // thumb：MD3 竖条
         thumb = {
             Box(
                 modifier = Modifier
-                    .size(20.dp)
-                    .background(MaterialTheme.colorScheme.primary, CircleShape),
+                    .size(width = 4.dp, height = 36.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(MaterialTheme.colorScheme.primary),
             )
+        },
+        // 轨道：完全自绘，确保圆点只有**一套**。
+        //
+        // ⚠️ 不能对 `SliderDefaults.Track` 再叠一层自己的点：
+        // 当 `steps > 0` 时，Material3 的原生 Track 会**自行绘制刻度点**，
+        // 与手动添加的点重叠后会出现「大小不一、排列错乱」的观感。
+        // 因此这里整体自绘；`steps` 仅用于让 Slider 吸附取值，不再借它画点。
+        track = { sliderState ->
+            val fraction = if (valueRange.endInclusive > valueRange.start) {
+                ((sliderState.value - valueRange.start) /
+                    (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+            } else {
+                0f
+            }
+            val activeColor = MaterialTheme.colorScheme.primary
+            val inactiveColor = MaterialTheme.colorScheme.surfaceContainerHighest
+            val dotOnActive = MaterialTheme.colorScheme.onPrimary
+            val dotOnInactive = MaterialTheme.colorScheme.onSurfaceVariant
+
+            Canvas(Modifier.fillMaxWidth().height(14.dp)) {
+                val barHeight = 10.dp.toPx()
+                val corner = CornerRadius(barHeight / 2f)
+                val centerY = size.height / 2f
+                val filledWidth = size.width * fraction
+
+                // 1) 底轨
+                drawRoundRect(
+                    color = inactiveColor,
+                    topLeft = Offset(0f, centerY - barHeight / 2f),
+                    size = Size(size.width, barHeight),
+                    cornerRadius = corner,
+                )
+                // 2) 已填充段
+                if (filledWidth > 0f) {
+                    drawRoundRect(
+                        color = activeColor,
+                        topLeft = Offset(0f, centerY - barHeight / 2f),
+                        size = Size(filledWidth, barHeight),
+                        cornerRadius = corner,
+                    )
+                }
+                // 3) 等距圆点 —— 全程唯一的一套点
+                val dotRadius = 2.5.dp.toPx()
+                repeat(TRACK_DOT_COUNT) { i ->
+                    val cx = size.width * (i + 0.5f) / TRACK_DOT_COUNT
+                    drawCircle(
+                        color = if (cx <= filledWidth) dotOnActive else dotOnInactive,
+                        radius = dotRadius,
+                        center = Offset(cx, centerY),
+                    )
+                }
+            }
         },
     )
 }
+
+/**
+ * 轨道上等距圆点的个数。
+ *
+ * 取 5 与 MD3 停靠点滑块的观感一致：点距足够疏朗，
+ * 在窄轨道上也不会糊成一条线。
+ */
+private const val TRACK_DOT_COUNT = 5
 
 /** 关于页信息行 */
 @Composable

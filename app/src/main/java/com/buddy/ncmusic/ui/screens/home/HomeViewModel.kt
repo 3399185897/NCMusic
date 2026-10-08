@@ -22,11 +22,16 @@ class HomeViewModel : ViewModel() {
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
 
-    private val _toplist = MutableStateFlow<List<Playlist>>(emptyList())
+    // 初值直接取全局缓存：即使 ViewModel 被重建，界面也能立刻显示已有榜单
+    private val _toplist = MutableStateFlow(ToplistCache.data)
     val toplist: StateFlow<List<Playlist>> = _toplist.asStateFlow()
 
-    private val _radarSongs = MutableStateFlow<List<Song>>(emptyList())
-    val radarSongs: StateFlow<List<Song>> = _radarSongs.asStateFlow()
+    private val _radarPlaylists = MutableStateFlow<List<Playlist>>(emptyList())
+    val radarPlaylists: StateFlow<List<Playlist>> = _radarPlaylists.asStateFlow()
+
+    /** 下拉刷新中（供官方 PullToRefresh 组件绑定） */
+    private val _refreshing = MutableStateFlow(false)
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -57,9 +62,23 @@ class HomeViewModel : ViewModel() {
     }
 
     private suspend fun loadRadar() {
-        when (val r = repo.radarSongs()) {
-            is ApiResult.Success -> _radarSongs.value = r.data
+        when (val r = repo.radarPlaylists()) {
+            is ApiResult.Success -> _radarPlaylists.value = r.data
             is ApiResult.Error -> Unit
+        }
+    }
+
+    /**
+     * 下拉刷新：同时刷新推荐歌单与个性化推荐。
+     * 用 [_refreshing] 驱动官方 PullToRefresh 组件的指示器。
+     */
+    fun refresh() {
+        viewModelScope.launch {
+            _refreshing.value = true
+            launch { loadPlaylists() }
+            launch { loadRadar() }
+            loadDaily()
+            _refreshing.value = false
         }
     }
 
@@ -70,10 +89,22 @@ class HomeViewModel : ViewModel() {
         }
     }
 
-    private suspend fun loadToplist() {
+    private suspend fun loadToplist(force: Boolean = false) {
+        // 命中全局缓存：立即回填并返回，不发起请求、不产生等待
+        if (!force && ToplistCache.hasData) {
+            if (_toplist.value.isEmpty()) _toplist.value = ToplistCache.data
+            return
+        }
         when (val r = repo.toplist()) {
-            is ApiResult.Success -> _toplist.value = r.data
-            is ApiResult.Error -> Unit
+            is ApiResult.Success -> {
+                _toplist.value = r.data
+                ToplistCache.data = r.data
+                ToplistCache.loaded = true
+            }
+            is ApiResult.Error -> {
+                // 请求失败时退回缓存，避免榜单区变成空白
+                if (ToplistCache.hasData) _toplist.value = ToplistCache.data
+            }
         }
     }
 

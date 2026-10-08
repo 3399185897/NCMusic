@@ -39,6 +39,9 @@ datastore = "1.1.1"
 # 封面取色
 palette = "1.0.0"
 
+# 平滑圆角（squircle，三次贝塞尔）—— JitPack
+smoothCornerRect = "v1.0.0"
+
 [libraries]
 # AndroidX 基础
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -56,6 +59,9 @@ androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core", version.ref = "materialIconsCore" }
+# 扩展图标库（含调色板/均衡器/字幕等分类图标）
+# 注意：R8 会裁掉未引用的图标，实际体积增量远小于库本身
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version.ref = "materialIconsCore" }
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 
 # 网络
@@ -65,6 +71,9 @@ kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 
 # 图片加载
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+
+# 平滑圆角
+smooth-corner-rect = { module = "com.github.racra:smooth-corner-rect-android-compose", version.ref = "smoothCornerRect" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 # 播放

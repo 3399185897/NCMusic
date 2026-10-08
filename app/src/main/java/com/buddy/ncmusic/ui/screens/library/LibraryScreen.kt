@@ -1,5 +1,9 @@
 package com.buddy.ncmusic.ui.screens.library
 
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
+import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -58,8 +62,10 @@ fun LibraryScreen(
     onOpenLocal: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLogin: () -> Unit,
+    onOpenStats: () -> Unit,
     vm: LibraryViewModel = viewModel(),
 ) {
+    val listState = rememberLazyListState()
     val userState by vm.userState.collectAsState(initial = UserState())
     val playlists by vm.playlists.collectAsState()
     val history by vm.history.collectAsState()
@@ -115,9 +121,11 @@ fun LibraryScreen(
     val createdPlaylists = playlists.filter { it.specialType != 5 && !it.subscribed }
     val subscribedPlaylists = playlists.filter { it.specialType != 5 && it.subscribed }
 
-    LazyColumn(
+    ListWithScrollIndicator(listState = listState, showIndicator = false) {
+        LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = rememberBottomSafeSpace()),
     ) {
         // 头像与设置（顶部留白后整体下移）
         item {
@@ -130,15 +138,11 @@ fun LibraryScreen(
 
         // 听歌统计
         item {
-            var showStats by remember { mutableStateOf(false) }
-            if (showStats) {
-                ListenStatsDialog(state = userState, onDismiss = { showStats = false })
-            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(AppShapes.of(16.dp))
                     .background(
                         Brush.linearGradient(
                             listOf(
@@ -147,7 +151,7 @@ fun LibraryScreen(
                             ),
                         ),
                     )
-                    .clickable { showStats = true }
+                    .clickable(onClick = onOpenStats)
                     .padding(horizontal = 16.dp, vertical = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -200,7 +204,7 @@ fun LibraryScreen(
                     ) {
                         CoverImage(
                             url = history.firstOrNull()?.coverUrl,
-                            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+                            modifier = Modifier.size(48.dp).clip(AppShapes.of(8.dp)),
                             contentDescription = "最近播放",
                         )
                         Spacer(Modifier.width(12.dp))
@@ -310,6 +314,7 @@ fun LibraryScreen(
             }
         }
     }
+    }
 
 }
 
@@ -381,7 +386,7 @@ private fun PlaylistRow(playlist: Playlist, onClick: () -> Unit) {
     ) {
         CoverImage(
             url = playlist.coverImgUrl,
-            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(8.dp)),
+            modifier = Modifier.size(48.dp).clip(AppShapes.of(8.dp)),
             contentDescription = playlist.name,
         )
         Spacer(Modifier.width(12.dp))
@@ -434,7 +439,7 @@ private fun ListenStatsDialog(state: UserState, onDismiss: () -> Unit) {
                                 modifier = Modifier
                                     .width(18.dp)
                                     .height(((sec.toFloat() / maxSec) * 110f).dp.coerceAtLeast(4.dp))
-                                    .clip(RoundedCornerShape(6.dp))
+                                    .clip(AppShapes.of(6.dp))
                                     .background(MaterialTheme.colorScheme.primary),
                             )
                             Spacer(Modifier.height(4.dp))
@@ -483,7 +488,7 @@ private fun BlockCard(content: @Composable () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(16.dp))
+            .clip(AppShapes.of(16.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
             .padding(vertical = 6.dp),
     ) {

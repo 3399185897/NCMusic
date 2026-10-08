@@ -1,5 +1,13 @@
 package com.buddy.ncmusic.ui.screens.playlist
 
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
+import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +62,15 @@ fun PlaylistScreen(
     onOpenArtist: (Long) -> Unit = {},
     vm: PlaylistViewModel = viewModel(),
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    /*
+     * 判断"正在播放的是不是本歌单"：
+     * 只要当前播放歌曲存在于本歌单中即认为是。
+     * （无需比较完整队列，语义上更宽松也更实用）
+     */
+    val playState by com.buddy.ncmusic.playback.PlaybackManager.state.collectAsState()
+    val currentSongId = playState.song?.id
     val playlist by vm.playlist.collectAsState()
     val songs by vm.songs.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -76,23 +93,27 @@ fun PlaylistScreen(
             )
             val scope = rememberCoroutineScope()
             var subscribed by remember(playlist?.id) { mutableStateOf(playlist?.subscribed == true) }
-            IconButton(onClick = {
-                val p = playlist ?: return@IconButton
-                val next = !subscribed
-                subscribed = next
-                scope.launch {
-                    when (NCMusicApp.instance.musicRepository.subscribePlaylist(p.id, next)) {
-                        is ApiResult.Error -> subscribed = !next
-                        else -> Unit
+            // 「我喜欢的音乐」本身即收藏集合，不存在"取消收藏"语义 —— 不显示该按钮
+            val isLikedPlaylist = playlist?.specialType == 5
+            if (!isLikedPlaylist) {
+                IconButton(onClick = {
+                    val p = playlist ?: return@IconButton
+                    val next = !subscribed
+                    subscribed = next
+                    scope.launch {
+                        when (NCMusicApp.instance.musicRepository.subscribePlaylist(p.id, next)) {
+                            is ApiResult.Error -> subscribed = !next
+                            else -> Unit
+                        }
                     }
+                }) {
+                    Icon(
+                        imageVector = if (subscribed) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        contentDescription = if (subscribed) "取消收藏" else "收藏歌单",
+                        tint = if (subscribed) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-            }) {
-                Icon(
-                    imageVector = if (subscribed) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    contentDescription = if (subscribed) "取消收藏" else "收藏歌单",
-                    tint = if (subscribed) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
 
@@ -112,10 +133,30 @@ fun PlaylistScreen(
                         }
                     }
                 }
-                LazyColumn(Modifier.fillMaxSize()) {
+                ListWithScrollIndicator(listState = listState) {
+                    LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
                     item {
                         PlaylistHeader(
                             playlist = playlist,
+                            onLocateCurrent = if (
+                                currentSongId != null &&
+                                songs.any { it.id == currentSongId }
+                            ) {
+                                {
+                                    val idx = songs.indexOfFirst { it.id == currentSongId }
+                                    if (idx >= 0) {
+                                        scope.launch {
+                                            // +1：列表第 0 项是头部
+                                            listState.animateScrollToItem(idx + 1)
+                                        }
+                                    }
+                                }
+                            } else {
+                                null
+                            },
                             songCount = songs.size,
                             onPlayAll = { onPlay(songs, 0) },
                             searchOpen = searchOpen,
@@ -136,7 +177,7 @@ fun PlaylistScreen(
                                 placeholder = { Text("搜索本歌单（歌名 / 歌手）") },
                                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                                 singleLine = true,
-                                shape = RoundedCornerShape(24.dp),
+                                shape = AppShapes.of(24.dp),
                             )
                         }
                     }
@@ -157,6 +198,7 @@ fun PlaylistScreen(
                         )
                     }
                 }
+                }
             }
         }
     }
@@ -169,11 +211,15 @@ private fun PlaylistHeader(
     onPlayAll: () -> Unit,
     searchOpen: Boolean = false,
     onToggleSearch: () -> Unit = {},
+    /** 非空时显示「定位到正在播放」按钮 */
+    onLocateCurrent: (() -> Unit)? = null,
 ) {
-    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    // 整体改为 Column：上半为「封面 + 信息」，下半为按钮行（独占整行，宽度充足）
+    Column(Modifier.padding(16.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         CoverImage(
             url = playlist?.coverImgUrl,
-            modifier = Modifier.size(140.dp).clip(RoundedCornerShape(12.dp)),
+            modifier = Modifier.size(126.dp).clip(AppShapes.of(14.dp)),
             contentDescription = playlist?.name,
         )
         Spacer(Modifier.width(16.dp))
@@ -196,19 +242,54 @@ private fun PlaylistHeader(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = onPlayAll, enabled = songCount > 0) {
+        }
+    }
+
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = onPlayAll, enabled = songCount > 0) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
                     Text("播放全部")
                 }
-                Spacer(Modifier.width(4.dp))
-                IconButton(onClick = onToggleSearch) {
+
+            // 与「播放全部」保持间距，两个控件不再贴在一起
+            Spacer(Modifier.width(16.dp))
+
+            // 搜索本页：与「播放全部」一同左对齐，配色一致
+            FilledIconButton(
+                onClick = onToggleSearch,
+                modifier = Modifier.size(40.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
+                Icon(
+                    imageVector = if (searchOpen) Icons.Default.Close else Icons.Default.Search,
+                    contentDescription = if (searchOpen) "关闭搜索" else "搜索本页",
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+
+            // 撑开剩余空间，使定位按钮靠右
+            Spacer(Modifier.weight(1f))
+
+            // 定位到正在播放：右对齐；仅当本歌单包含当前播放歌曲时渲染
+            if (onLocateCurrent != null) {
+                FilledIconButton(
+                    onClick = onLocateCurrent,
+                    modifier = Modifier.size(40.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                ) {
                     Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = if (searchOpen) "关闭搜索" else "搜索本页",
-                        tint = MaterialTheme.colorScheme.primary,
+                        // 向下箭头，避免与「播放全部」的三角图标重复
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "定位到正在播放",
+                        modifier = Modifier.size(22.dp),
                     )
                 }
             }

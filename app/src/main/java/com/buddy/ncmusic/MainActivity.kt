@@ -1,5 +1,11 @@
 package com.buddy.ncmusic
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.background
+import com.buddy.ncmusic.ui.theme.ColorRevealOverlay
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Box
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -39,7 +45,17 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = state?.dynamicColor ?: true,
                 customColor = state?.customColor ?: 0L,
             ) {
-                NCMusicApp()
+                // 分层：基础背景 → 颜色扩散 → 内容
+                // 扩散效果刻意置于内容**之下**，这样文字与控件始终清晰，
+                // 不会出现「一层色块盖住界面」的问题
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface),
+                ) {
+                    ColorRevealOverlay()
+                    NCMusicApp()
+                }
             }
         }
     }

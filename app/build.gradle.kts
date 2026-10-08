@@ -25,8 +25,8 @@ android {
         applicationId = "com.buddy.ncmusic"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         vectorDrawables { useSupportLibrary = true }
     }
@@ -106,6 +106,7 @@ dependencies {
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui.tooling.preview)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
@@ -128,4 +129,7 @@ dependencies {
     // 本地存储（DataStore，替代 Room 减依赖）
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.palette)
+
+    // 平滑圆角（squircle）—— 比 RoundedCornerShape 的圆弧更柔和
+    implementation(libs.smooth.corner.rect)
 }

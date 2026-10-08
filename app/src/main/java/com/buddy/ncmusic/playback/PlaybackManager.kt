@@ -203,7 +203,7 @@ object PlaybackManager {
         playAt(startIndex)
     }
 
-    fun playAt(index: Int) {
+    fun playAt(index: Int, fadeIn: Boolean = false, fadeInMs: Long = 0L) {
         ensureInit()
         if (index !in _queue.indices) return
         currentIndex = index
@@ -232,7 +232,10 @@ object PlaybackManager {
             runCatching {
                 player.setMediaItem(MediaItem.fromUri(uri))
                 player.prepare()
+                // 淡入：加载完成后从 0 音量渐升到正常
+                if (fadeIn) player.volume = 0f
                 player.play()
+                if (fadeIn && fadeInMs > 0) fadeVolume(0f, 1f, fadeInMs)
                 loadLyrics(song.id)
             }.onFailure {
                 _state.update { it.copy(isLoading = false) }
@@ -310,25 +313,44 @@ object PlaybackManager {
     fun togglePlayPause() {
         ensureInit()
         val shouldPlay = !_state.value.isPlaying
-        if (shouldPlay) player.play() else player.pause()
+        val ps = appContext.userPreferences.let { it }
+        if (shouldPlay) {
+            // 恢复播放：淡入，避免起播爆音
+            player.volume = 0f
+            player.play()
+            scope.launch {
+                val s = ps.userStateFlow.first()
+                val ms = if (s.crossfadeEnabled) 220L else 0L
+                if (ms > 0) fadeVolume(0f, 1f, ms) else player.volume = 1f
+            }
+        } else {
+            // 暂停：先淡出再暂停，避免截断爆音
+            scope.launch {
+                val s = ps.userStateFlow.first()
+                val ms = if (s.crossfadeEnabled) 200L else 0L
+                if (ms > 0) fadeVolume(1f, 0f, ms)
+                player.pause()
+                player.volume = 1f
+            }
+        }
         _state.update { it.copy(isPlaying = shouldPlay) }
     }
 
     fun next() {
         if (_queue.isEmpty()) return
         when (_state.value.mode) {
-            PlayMode.SINGLE_LOOP -> playAt(currentIndex)
+            PlayMode.SINGLE_LOOP -> switchTo(currentIndex)
             PlayMode.SHUFFLE -> {
                 val candidates = _queue.indices.filter { it != currentIndex }
                 val idx = if (candidates.isEmpty()) currentIndex else candidates.random()
-                playAt(idx)
+                switchTo(idx)
             }
             else -> {
                 val nextIndex = currentIndex + 1
                 if (nextIndex < _queue.size) {
-                    playAt(nextIndex)
+                    switchTo(nextIndex)
                 } else if (_state.value.mode == PlayMode.LIST_LOOP) {
-                    playAt(0)
+                    switchTo(0)
                 }
             }
         }
@@ -337,15 +359,55 @@ object PlaybackManager {
     fun previous() {
         if (_queue.isEmpty()) return
         if (currentIndex > 0) {
-            playAt(currentIndex - 1)
+            switchTo(currentIndex - 1)
         } else {
             // 已在第一首：循环模式回到最后一首，否则重播当前
             if (_state.value.mode == PlayMode.LIST_LOOP || _state.value.mode == PlayMode.SHUFFLE) {
-                playAt(_queue.size - 1)
+                switchTo(_queue.size - 1)
             } else {
-                playAt(0)
+                switchTo(0)
             }
         }
+    }
+
+    /** 取消中的淡出协程（避免连续切歌时多个淡出叠加） */
+    private var fadeJob: Job? = null
+
+    /**
+     * 统一切歌入口：根据「淡入淡出」设置决定是否做音量渐变过渡。
+     * 淡出 → 切歌 → 淡入（淡入在 [playAt] 加载完成后执行）。
+     */
+    private fun switchTo(index: Int) {
+        // 取消上一个未完成的淡出，避免连续切歌时叠加
+        fadeJob?.cancel()
+        fadeJob = scope.launch {
+            val ps = appContext.userPreferences.userStateFlow.first()
+            // 重置音量，避免上次取消残留的中间值
+            if (::player.isInitialized) player.volume = 1f
+            if (!ps.crossfadeEnabled) {
+                playAt(index)
+                return@launch
+            }
+            val halfMs = ps.crossfadeSeconds.coerceIn(1, 8) * 1000L / 2
+            fadeVolume(1f, 0f, halfMs)
+            playAt(index, fadeIn = true, fadeInMs = halfMs)
+        }
+    }
+
+    /** 音量线性渐变（挂起，可被取消） */
+    private suspend fun fadeVolume(from: Float, to: Float, durationMs: Long) {
+        if (durationMs <= 0L) {
+            player.volume = to
+            return
+        }
+        val steps = 16
+        val stepMs = durationMs / steps
+        for (i in 1..steps) {
+            val f = i.toFloat() / steps
+            player.volume = from + (to - from) * f
+            delay(stepMs)
+        }
+        player.volume = to
     }
 
     /** 切换音质并立即重载当前歌曲 */
@@ -372,6 +434,17 @@ object PlaybackManager {
         player.seekTo(position)
     }
 
+    /** 跳转到指定位置并确保开始播放（用于从歌词行直接播放） */
+    fun seekToAndPlay(position: Long) {
+        ensureInit()
+        _state.update { it.copy(position = position) }
+        player.seekTo(position)
+        if (!_state.value.isPlaying) {
+            player.play()
+            _state.update { it.copy(isPlaying = true) }
+        }
+    }
+
     /** 循环切换播放模式 */
     fun cycleMode() {
         val next = PlayMode.entries[(_state.value.mode.ordinal + 1) % PlayMode.entries.size]
@@ -386,7 +459,8 @@ object PlaybackManager {
         scope.launch {
             val r = repository.lyric(id)
             if (r is ApiResult.Success) {
-                val lyrics = LyricParser.parse(r.data.lrc?.lyric)
+                // 合并官方翻译歌词（tlyric）
+                val lyrics = LyricParser.parse(r.data.lrc?.lyric, r.data.tlyric?.lyric)
                 _state.update { it.copy(lyrics = lyrics) }
             }
         }

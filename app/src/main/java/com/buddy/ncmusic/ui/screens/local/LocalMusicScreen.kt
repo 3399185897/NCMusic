@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.local
 
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
 import android.Manifest
 import android.content.Context
 import android.os.Build
@@ -44,6 +46,7 @@ fun LocalMusicScreen(
     onPlay: (List<Song>, Int) -> Unit,
     onBack: () -> Unit,
 ) {
+    val listState = rememberLazyListState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
@@ -102,10 +105,15 @@ fun LocalMusicScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.titleSmall,
                 )
-                LazyColumn(Modifier.fillMaxSize()) {
+                ListWithScrollIndicator(listState = listState, showIndicator = false) {
+                    LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                ) {
                     itemsIndexed(songs) { index, song ->
                         SongListItem(song = song, onClick = { onPlay(songs, index) })
                     }
+                }
                 }
             }
         }

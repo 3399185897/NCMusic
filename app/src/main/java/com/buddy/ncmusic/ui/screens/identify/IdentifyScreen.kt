@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.identify
 
+import com.buddy.ncmusic.ui.theme.AppShapes
 import android.Manifest
 import android.content.Context
 import android.media.MediaRecorder
@@ -162,7 +163,7 @@ fun IdentifyScreen(onBack: () -> Unit, onPlay: (List<Song>, Int) -> Unit) {
                             Modifier
                                 .width(7.dp)
                                 .height(h.dp)
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(AppShapes.of(4.dp))
                                 .background(primary),
                         )
                         Spacer(Modifier.width(6.dp))

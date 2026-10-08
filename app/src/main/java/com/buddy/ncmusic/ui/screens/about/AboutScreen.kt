@@ -1,5 +1,8 @@
 package com.buddy.ncmusic.ui.screens.about
 
+import androidx.compose.foundation.layout.width
+import android.os.Build
+import com.buddy.ncmusic.ui.theme.AppShapes
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
@@ -65,7 +68,7 @@ fun AboutScreen(onBack: () -> Unit) {
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull().orEmpty().ifBlank { "1.0.0" }
+        }.getOrNull().orEmpty().ifBlank { "1.1.0" }
     }
 
     Column(Modifier.fillMaxSize()) {
@@ -92,7 +95,7 @@ fun AboutScreen(onBack: () -> Unit) {
             ) {
                 CoverImage(
                     url = null,
-                    modifier = Modifier.size(76.dp).clip(RoundedCornerShape(20.dp)),
+                    modifier = Modifier.size(76.dp).clip(AppShapes.of(20.dp)),
                     contentDescription = "应用图标",
                 )
                 Spacer(Modifier.height(12.dp))
@@ -103,10 +106,24 @@ fun AboutScreen(onBack: () -> Unit) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "版本 $versionName",
+                    text = "版本 v$versionName",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            // ---------- 构建信息 ----------
+            // 让用户（与 issue 反馈者）能一眼看到运行环境，便于定位问题
+            SectionTitle("构建信息")
+            Column(Modifier.padding(horizontal = 16.dp)) {
+                InfoRow("应用包名", "com.buddy.ncmusic")
+                InfoRow("技术栈", "Kotlin · Jetpack Compose · Material 3 · Media3")
+                InfoRow(
+                    "运行环境",
+                    "Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）· " +
+                        "${Build.SUPPORTED_ABIS.firstOrNull().orEmpty()}",
+                )
+                InfoRow("设计规范", "Material Design 3 · 支持莫奈动态取色")
             }
 
             // ---------- 项目仓库（预留） ----------
@@ -115,7 +132,7 @@ fun AboutScreen(onBack: () -> Unit) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(AppShapes.of(14.dp))
                     .clickable(enabled = PROJECT_REPO_URL.isNotBlank()) {
                         runCatching {
                             context.startActivity(
@@ -211,5 +228,27 @@ fun AboutScreen(onBack: () -> Unit) {
                 textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+/** 构建信息行：左标签右取值 */
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.End,
+        )
     }
 }

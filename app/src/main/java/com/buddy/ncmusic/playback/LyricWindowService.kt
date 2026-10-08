@@ -260,29 +260,50 @@ class LyricWindowService : Service() {
                     return@collect
                 }
                 val index = s.lyrics.indexOfLast { it.time <= s.position }.coerceAtLeast(0)
-                val current = s.lyrics.getOrNull(index)?.text.orEmpty()
+                val line = s.lyrics.getOrNull(index)
+                val current = line?.text.orEmpty()
+                val translation = line?.translation.orEmpty()
                 val next = s.lyrics.getOrNull(index + 1)?.text.orEmpty()
 
-                if (next.isBlank()) {
-                    view.text = current
-                } else {
-                    val text = "$current\n$next"
-                    val span = SpannableString(text)
+                // 组装多行：当前行 / （翻译） / 下一行
+                val parts = mutableListOf(current)
+                if (translation.isNotBlank()) parts.add(translation)
+                if (next.isNotBlank()) parts.add(next)
+                val text = parts.joinToString("\n")
+
+                val span = SpannableString(text)
+                val faded = (textColor and 0x00FFFFFF) or (0x99 shl 24)
+                val dimmer = (textColor and 0x00FFFFFF) or (0xBB shl 24)
+
+                // 当前行：主色 + 加粗
+                span.setSpan(
+                    ForegroundColorSpan(textColor), 0, current.length,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+                span.setSpan(
+                    StyleSpan(Typeface.BOLD), 0, current.length,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                )
+
+                var cursor = current.length + 1
+                // 翻译行：同色稍淡
+                if (translation.isNotBlank()) {
                     span.setSpan(
-                        ForegroundColorSpan(textColor), 0, current.length,
+                        ForegroundColorSpan(faded),
+                        cursor, cursor + translation.length,
                         Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
                     )
-                    span.setSpan(
-                        StyleSpan(Typeface.BOLD), 0, current.length,
-                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                    val faded = (textColor and 0x00FFFFFF) or (0x99 shl 24)
-                    span.setSpan(
-                        ForegroundColorSpan(faded), current.length + 1, text.length,
-                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                    view.text = span
+                    cursor += translation.length + 1
                 }
+                // 下一行：更淡
+                if (next.isNotBlank()) {
+                    span.setSpan(
+                        ForegroundColorSpan(dimmer),
+                        cursor, cursor + next.length,
+                        Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+                view.text = span
             }
         }
     }

@@ -54,6 +54,7 @@ class MusicRepository(private val prefs: UserPreferences) {
                 userId = profile.userId,
                 nickname = profile.nickname,
                 avatarUrl = profile.avatarUrl.orEmpty(),
+                level = fetchLevel(profile.userId),
             )
         }
     }
@@ -77,12 +78,14 @@ class MusicRepository(private val prefs: UserPreferences) {
         val profile = r.userProfile
         if (r.isLoggedIn && profile != null) {
             val cookie = r.cookie ?: api.cookie.orEmpty()
-            saveSession(cookie, profile.userId, profile.nickname, profile.avatarUrl.orEmpty())
+            val level = fetchLevel(profile.userId)
+            saveSession(cookie, profile.userId, profile.nickname, profile.avatarUrl.orEmpty(), level)
             return UserState(
                 cookie = cookie,
                 userId = profile.userId,
                 nickname = profile.nickname,
                 avatarUrl = profile.avatarUrl.orEmpty(),
+                level = level,
             )
         }
         throw ApiException(r.code, errorMsg)
@@ -101,7 +104,13 @@ class MusicRepository(private val prefs: UserPreferences) {
         val r = api.loginStatus()
         val profile = r.userProfile
         if (r.isLoggedIn && profile != null) {
-            saveSession(ck, profile.userId, profile.nickname, profile.avatarUrl.orEmpty())
+            saveSession(
+                ck,
+                profile.userId,
+                profile.nickname,
+                profile.avatarUrl.orEmpty(),
+                fetchLevel(profile.userId),
+            )
             true
         } else {
             api.cookie = null
@@ -118,11 +127,15 @@ class MusicRepository(private val prefs: UserPreferences) {
         val r = api.loginStatus()
         val profile = r.userProfile
         if (r.isLoggedIn && profile != null) {
+            // 先写入 cookie，后续请求（含等级）才能以当前用户身份发出
+            api.cookie = r.cookie ?: api.cookie.orEmpty()
             saveSession(
                 cookie = r.cookie ?: api.cookie.orEmpty(),
                 userId = profile.userId,
                 nickname = profile.nickname,
                 avatarUrl = profile.avatarUrl.orEmpty(),
+                // 拉取账号等级；失败时置 0，稍后进设置页会再补一次
+                level = fetchLevel(profile.userId),
             )
             true
         } else {
@@ -130,9 +143,31 @@ class MusicRepository(private val prefs: UserPreferences) {
         }
     }
 
-    private suspend fun saveSession(cookie: String, userId: Long, nickname: String, avatarUrl: String) {
+    /** 刷新账号等级（设置页进入时调用；失败不覆盖已有值） */
+    suspend fun refreshUserLevel(userId: Long): ApiResult<Int> = safeApiCall {
+        val lv = api.userDetail(userId)
+        if (lv > 0) prefs.setLevel(lv)
+        lv
+    }
+
+    /**
+     * 拉取账号等级。
+     *
+     * 单独包一层的原因：等级属于**非关键信息**，
+     * 接口失败不应让整个登录流程失败，因此吞掉异常返回 0。
+     */
+    private suspend fun fetchLevel(userId: Long): Int =
+        runCatching { api.userDetail(userId) }.getOrDefault(0)
+
+    private suspend fun saveSession(
+        cookie: String,
+        userId: Long,
+        nickname: String,
+        avatarUrl: String,
+        level: Int = 0,
+    ) {
         api.cookie = cookie
-        prefs.saveLogin(userId, nickname, avatarUrl, cookie)
+        prefs.saveLogin(userId, nickname, avatarUrl, cookie, level)
     }
 
     // ---------------- 推荐 / 排行榜 ----------------
@@ -143,6 +178,26 @@ class MusicRepository(private val prefs: UserPreferences) {
 
     suspend fun recommendSongs(): ApiResult<List<Song>> = safeApiCall {
         api.recommendSongs()
+    }
+
+    /** 雷达歌单（个性化歌单，与推荐歌单不同批次） */
+    /** 账号等级 */
+    suspend fun userLevel(uid: Long): ApiResult<Int> = safeApiCall { api.userDetail(uid) }
+
+    /**
+     * 雷达歌单。
+     *
+     * limit 默认 20 —— 首页的「正方形无缝拼接」拼贴墙固定使用 18 个方块，
+     * 若来源不足 18 个，拼贴会按 `index % size` 循环取用而出现**封面重复**。
+     * 取 20 可确保 18 个方块各用一张不同封面。
+     */
+    suspend fun radarPlaylists(limit: Int = 20): ApiResult<List<Playlist>> = safeApiCall {
+        api.radarPlaylists(limit)
+    }
+
+    /** 为你推荐（个性化，与每日推荐不同批次） */
+    suspend fun forYouSongs(): ApiResult<List<com.buddy.ncmusic.data.model.Song>> = safeApiCall {
+        api.forYouSongs()
     }
 
     suspend fun toplist(): ApiResult<List<Playlist>> = safeApiCall {
