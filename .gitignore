@@ -38,3 +38,5 @@ ncmusic-release.keystore
 # ---- 但 releases/ 下用于分发编译产物的 APK 需要提交 ----
 !releases/
 !releases/*.apk
+# 源码归档体积较大，仅作为 Release 附件发布，不入版本库
+releases/*.zip
