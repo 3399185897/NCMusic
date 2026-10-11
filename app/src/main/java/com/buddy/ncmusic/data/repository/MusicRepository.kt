@@ -1,5 +1,8 @@
 package com.buddy.ncmusic.data.repository
 
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import android.graphics.Bitmap
 import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.core.network.direct.DirectApi
@@ -232,16 +235,237 @@ class MusicRepository(private val prefs: UserPreferences) {
         api.subscribePlaylist(id, subscribe)
     }
 
-    /** 下载歌曲到本地音乐目录（App 专属外部目录，无需额外权限） */
-    suspend fun downloadSong(song: Song, quality: String): ApiResult<java.io.File> = safeApiCall {
-        val url = api.songUrl(song.id, quality) ?: throw ApiException(-1, "无法获取下载地址")
+    /**
+     * 下载歌曲。
+     *
+     * ## 保存位置
+     *
+     * 优先使用用户在设置中选择的目录（`cacheDirUri`，SAF 树 URI）；
+     * 未设置时落到 App 专属外部目录（无需额外权限）。
+     *
+     * > 修复历史 bug：此前无论用户是否设置过下载目录，
+     * > 都固定写进 `getExternalFilesDir(DIRECTORY_MUSIC)` ——
+     * > 设置项形同虚设，用户永远拿不到自己指定的位置。
+     *
+     * ## 扩展名
+     *
+     * 跟随实际编码：无损及以上是 FLAC（写成 .mp3 会让部分播放器拒绝识别）。
+     *
+     * @return 成功时返回**保存位置的描述文本**，供 UI 直接展示
+     */
+    suspend fun downloadSong(song: Song, quality: String): ApiResult<String> = safeApiCall {
+        val url = api.downloadUrl(song.id, quality)
+            ?: throw ApiException(
+                -1,
+                "无法获取下载地址（该音质不可用，或需要登录 VIP / SVIP 账号）",
+            )
+
         val ctx = NCMusicApp.instance
-        val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC) ?: ctx.filesDir
-        dir.mkdirs()
         val safeName = song.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        val file = java.io.File(dir, "$safeName.mp3")
-        if (!api.downloadToFile(url, file)) throw ApiException(-1, "下载失败")
-        file
+        val ext = api.encodeTypeOf(quality)
+        val fileName = "$safeName.$ext"
+        val mime = if (ext == "flac") "audio/flac" else "audio/mpeg"
+
+        // 用户设置的下载目录（空串 = 未设置，用 App 专属目录）
+        val customUri = ctx.userPreferences.userStateFlow.first().cacheDirUri
+
+        // ---- 1) 用户自定义目录（SAF）优先 ----
+        val savedToCustom = customUri.isNotBlank() &&
+            saveToSafDir(ctx, android.net.Uri.parse(customUri), fileName, mime, url)
+
+        // ---- 2) 回退：App 专属外部目录 ----
+        // 自定义目录写入失败时不直接报错，避免「目录设错了就完全下不了」
+        if (!savedToCustom) {
+            val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
+                ?: ctx.filesDir
+            dir.mkdirs()
+            val file = java.io.File(dir, fileName)
+            if (!api.downloadToFile(url, file)) throw ApiException(-1, "下载失败")
+        }
+
+        // ---- 3) 顺带保存封面与歌词（失败不影响音频本身）----
+        val extras = downloadArtifacts(ctx, song, safeName, customUri)
+
+        val where = if (savedToCustom) "已保存到所选目录" else "已保存到应用目录"
+        where + "：" + fileName + if (extras.isNotBlank()) "（含 " + extras + "）" else ""
+    }
+
+    /**
+     * 把下载内容写入用户通过 SAF 选定的目录。
+     *
+     * 先落到 App 缓存目录再复制过去 —— SAF 只提供 OutputStream，
+     * 而现有下载器以 File 为单位。走「临时文件 + 复制」既能复用下载逻辑，
+     * 也避免在目标目录留下半截文件（复制失败时直接丢弃临时文件）。
+     *
+     * @return true 表示成功写入目标目录
+     */
+    private suspend fun saveToSafDir(
+        ctx: android.content.Context,
+        treeUri: android.net.Uri,
+        fileName: String,
+        mime: String,
+        url: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val tmp = java.io.File(ctx.cacheDir, fileName)
+            if (!api.downloadToFile(url, tmp)) return@runCatching false
+
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+            val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+
+            // 若同名文件已存在，先删除再新建，避免生成 "name (1).flac"
+            val children = android.provider.DocumentsContract
+                .buildChildDocumentsUriUsingTree(treeUri, docId)
+            ctx.contentResolver.query(
+                children,
+                arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                ),
+                null, null, null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    if (c.getString(1) == fileName) {
+                        runCatching {
+                            android.provider.DocumentsContract.deleteDocument(
+                                ctx.contentResolver,
+                                android.provider.DocumentsContract
+                                    .buildDocumentUriUsingTree(treeUri, c.getString(0)),
+                            )
+                        }
+                    }
+                }
+            }
+
+            val target = android.provider.DocumentsContract
+                .createDocument(ctx.contentResolver, parent, mime, fileName)
+                ?: return@runCatching false
+
+            ctx.contentResolver.openOutputStream(target)?.use { out ->
+                tmp.inputStream().use { it.copyTo(out) }
+            } ?: return@runCatching false
+
+            tmp.delete()
+            true
+        }.getOrDefault(false)
+    }
+
+    /**
+     * 下载完成后顺带保存**封面**与**歌词**，作者 / 专辑信息写入 LRC 头部。
+     *
+     * 之所以把作者信息放进 LRC 而不是另建一份 json：
+     * `[ti:]` / `[ar:]` / `[al:]` 是 LRC 标准标签，任何歌词播放器都能识别；
+     * 存成 json 反而没有通用消费者，等于白存。
+     *
+     * @return 成功保存的附加项描述（如 "歌词+封面"），全部失败时为空串
+     */
+    private suspend fun downloadArtifacts(
+        ctx: android.content.Context,
+        song: Song,
+        baseName: String,
+        customUri: String,
+    ): String = withContext(Dispatchers.IO) {
+        val done = mutableListOf<String>()
+
+        // ---- 歌词（含元信息头部）----
+        runCatching {
+            val raw = api.lyric(song.id).lrc?.lyric
+            if (!raw.isNullOrBlank()) {
+                val header = buildString {
+                    appendLine("[ti:" + song.name + "]")
+                    appendLine("[ar:" + song.artistNames + "]")
+                    appendLine("[al:" + (song.album?.name ?: "") + "]")
+                    if (!song.coverUrl.isNullOrBlank()) {
+                        appendLine("[cover:" + song.coverUrl + "]")
+                    }
+                    appendLine()
+                }
+                if (writeArtifact(ctx, customUri, baseName + ".lrc", (header + raw).toByteArray())) {
+                    done += "歌词"
+                }
+            }
+        }
+
+        // ---- 封面 ----
+        runCatching {
+            val cover = song.coverUrl
+            if (!cover.isNullOrBlank()) {
+                val tmp = java.io.File(ctx.cacheDir, baseName + ".jpg")
+                if (api.downloadToFile(cover, tmp)) {
+                    val bytes = tmp.readBytes()
+                    tmp.delete()
+                    if (writeArtifact(ctx, customUri, baseName + ".jpg", bytes)) {
+                        done += "封面"
+                    }
+                }
+            }
+        }
+
+        done.joinToString("+")
+    }
+
+    /**
+     * 写一个附加文件到下载目录（与音频同目录）。
+     *
+     * 自定义目录走 SAF（`createDocument` + `openOutputStream`）；
+     * 否则直接写到 App 专属目录。
+     */
+    private suspend fun writeArtifact(
+        ctx: android.content.Context,
+        customUri: String,
+        name: String,
+        bytes: ByteArray,
+    ): Boolean = withContext(Dispatchers.IO) {
+        runCatching {
+            val mime = when {
+                name.endsWith(".jpg") -> "image/jpeg"
+                name.endsWith(".lrc") -> "text/plain"
+                else -> "application/octet-stream"
+            }
+            if (customUri.isNotBlank()) {
+                val treeUri = android.net.Uri.parse(customUri)
+                val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                val parent = android.provider.DocumentsContract
+                    .buildDocumentUriUsingTree(treeUri, docId)
+
+                // 同名先删，避免系统改名为 "name (1).lrc"
+                val children = android.provider.DocumentsContract
+                    .buildChildDocumentsUriUsingTree(treeUri, docId)
+                ctx.contentResolver.query(
+                    children,
+                    arrayOf(
+                        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    ),
+                    null, null, null,
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        if (c.getString(1) == name) {
+                            runCatching {
+                                android.provider.DocumentsContract.deleteDocument(
+                                    ctx.contentResolver,
+                                    android.provider.DocumentsContract
+                                        .buildDocumentUriUsingTree(treeUri, c.getString(0)),
+                                )
+                            }
+                        }
+                    }
+                }
+
+                val target = android.provider.DocumentsContract
+                    .createDocument(ctx.contentResolver, parent, mime, name)
+                    ?: return@runCatching false
+                ctx.contentResolver.openOutputStream(target)?.use { it.write(bytes) }
+                    ?: return@runCatching false
+                true
+            } else {
+                val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
+                    ?: ctx.filesDir
+                dir.mkdirs()
+                java.io.File(dir, name).writeBytes(bytes)
+                true
+            }
+        }.getOrDefault(false)
     }
 
     suspend fun playlistDetail(id: Long): ApiResult<Playlist> = safeApiCall {

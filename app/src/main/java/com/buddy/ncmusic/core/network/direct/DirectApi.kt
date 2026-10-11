@@ -335,23 +335,126 @@ class DirectApi {
 
     // ---------------- 播放 / 歌词 ----------------
 
+    /**
+     * 获取歌曲的**播放**地址。
+     *
+     * ## 为什么用 v1 接口的 `level` 而不是旧接口的 `br`
+     *
+     * 旧接口 `/weapi/song/enhance/player/url` 只认 `br`（比特率数值），
+     * 而 hires（Hi-Res）与 jymaster（超清母带）**没有对应的 br 数值** ——
+     * 一旦把 level 换算成 br，这两种音质就只能退化到 320000（极高），
+     * 表现为「选了无损/母带，拿到的仍是普通音质」。
+     *
+     * v1 接口直接接受 `level` 字符串，原生支持全部 6 档音质：
+     * `standard` / `higher` / `exhigh` / `lossless` / `hires` / `jymaster`。
+     *
+     * @param level 音质档位，见上；空值时按 `exhigh` 兜底
+     */
     suspend fun songUrl(id: Long, level: String): String? {
+        // 逐级降级尝试。
+        //
+        // 服务端会按**账号权限**决定给不给某个音质的播放地址：
+        // 未登录（或非会员）请求 exhigh 及以上时，返回的 url 往往是 null。
+        // 若只按请求音质取一次，结果就是「完全播不出来」——
+        // 这正是「未登录无法播放」的根因。
+        //
+        // 因此从请求音质开始逐级下调，取到第一个非空地址即返回
+        // （最差也会退到 standard，保证能出声）。
+        for (lv in qualityFallbackChain(level)) {
+            val url = fetchPlayerUrl(id, lv)
+            if (!url.isNullOrBlank()) return url
+        }
+        return null
+    }
+
+    /**
+     * 按请求音质生成**降级链**（由高到低）。
+     *
+     * 顺序不是随便排的：每次都退到低一档，直到 `standard`。
+     */
+    private fun qualityFallbackChain(level: String): List<String> = when (level) {
+        "jymaster" -> listOf("jymaster", "hires", "lossless", "exhigh", "higher", "standard")
+        "hires" -> listOf("hires", "lossless", "exhigh", "higher", "standard")
+        "lossless" -> listOf("lossless", "exhigh", "higher", "standard")
+        "exhigh" -> listOf("exhigh", "higher", "standard")
+        "higher" -> listOf("higher", "standard")
+        else -> listOf("standard")
+    }
+
+    /**
+     * 按**单一**音质取播放地址：v1 接口优先，失败回退旧接口。
+     *
+     * @return 可播放地址；该音质不可用时为 null
+     */
+    private suspend fun fetchPlayerUrl(id: Long, level: String): String? {
+        // ---- 优先 v1 接口：同一套 level 覆盖全部 6 档音质 ----
+        val viaV1 = runCatching {
+            weapi(
+                "/weapi/song/enhance/player/url/v1",
+                buildJsonObject {
+                    put("ids", "[$id]")
+                    put("level", level)
+                    put("encodeType", encodeTypeOf(level))
+                    put("csrf_token", "")
+                },
+            )["data"]?.arr()?.firstOrNull()?.safeObject()?.get("url")?.str()
+        }.getOrNull()
+        if (!viaV1.isNullOrBlank()) return viaV1
+
+        // ---- 回退旧接口 ----
+        // 旧接口只认 br 数值：lossless 及以上统一请求 999000，
+        // 让服务端在账号权限内返回最高音质。
+        // ⚠️ 不能填 320000 —— 那会把上限锁死在「极高」，
+        // 反而比请求无损拿到的还差。
         val br = when (level) {
             "standard" -> 128000
             "higher" -> 192000
-            "exhigh" -> 320000
-            "lossless" -> 999000
-            else -> 320000
+            else -> 999000
         }
+        return runCatching {
+            weapi(
+                "/weapi/song/enhance/player/url",
+                buildJsonObject {
+                    put("ids", "[$id]")
+                    put("br", br)
+                    put("csrf_token", "")
+                },
+            )["data"]?.arr()?.firstOrNull()?.safeObject()?.get("url")?.str()
+        }.getOrNull()
+    }
+
+    /**
+     * 获取歌曲的**下载**地址。
+     *
+     * 与播放地址走**不同接口**：`/song/enhance/download/url/v1`。
+     * 该接口**必须登录**（未登录返回 code 301），且对高音质资源更完整 ——
+     * 播放接口出于版权保护可能只给试听片段，下载接口才会给出整曲文件。
+     *
+     * @return 下载直链；无权限或该音质不可用时为 null
+     */
+    suspend fun downloadUrl(id: Long, level: String): String? {
         val root = weapi(
-            "/weapi/song/enhance/player/url",
+            "/weapi/song/enhance/download/url/v1",
             buildJsonObject {
-                put("ids", "[$id]")
-                put("br", br)
+                put("id", "$id")
+                put("level", level.ifBlank { "exhigh" })
+                put("encodeType", encodeTypeOf(level))
                 put("csrf_token", "")
             },
         )
-        return root["data"]?.arr()?.firstOrNull()?.safeObject()?.get("url")?.str()
+        return root["data"]?.safeObject()?.get("url")?.str()
+    }
+
+    /**
+     * 按音质档位推断容器格式。
+     *
+     * 无损及以上（lossless / hires / jymaster）为 FLAC，其余为 MP3。
+     * 该值会传给接口的 `encodeType`，也决定下载文件的扩展名 ——
+     * 若把 FLAC 数据写成 .mp3 后缀，部分播放器会拒绝识别。
+     */
+    fun encodeTypeOf(level: String): String = when (level) {
+        "lossless", "hires", "jymaster" -> "flac"
+        else -> "mp3"
     }
 
     suspend fun lyric(id: Long): LyricResponse {

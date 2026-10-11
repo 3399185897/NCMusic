@@ -57,7 +57,7 @@ object ColorRevealState {
  * 半径由 0 增长至屏幕对角线长度，形成"从点击处漫开"的过渡，动画结束自动清理。
  */
 @Composable
-fun ColorRevealOverlay(durationMillis: Int = 520) {
+fun ColorRevealOverlay(durationMillis: Int = 820) {
     val token = ColorRevealState.token
     if (token == 0) return
     val revealColor = ColorRevealState.color ?: return
@@ -76,9 +76,25 @@ fun ColorRevealOverlay(durationMillis: Int = 520) {
 
     Canvas(Modifier.fillMaxSize()) {
         val maxRadius = hypot(size.width, size.height)
-        val radius = maxRadius * progress.value
-        if (radius > 0f) {
-            drawCircle(color = revealColor, radius = radius, center = origin)
+        val p = progress.value
+        val radius = maxRadius * p
+
+        // 收尾淡出：扩散到约 82% 后开始降 alpha。
+        //
+        // 原先动画跑满 progress=1 时整屏仍是实色，下一帧 Overlay 被 clear() 移除，
+        // 于是出现"最后一帧满屏色块突然消失"的跳变。
+        // 提前把 alpha 收到 0，遮罩消失时与背景无缝衔接。
+        val alpha = if (p > FADE_START) {
+            ((1f - p) / (1f - FADE_START)).coerceIn(0f, 1f)
+        } else {
+            1f
+        }
+
+        if (radius > 0f && alpha > 0f) {
+            drawCircle(color = revealColor, alpha = alpha, radius = radius, center = origin)
         }
     }
 }
+
+/** 开始淡出的进度点：此后 alpha 线性收敛到 0，避免收尾跳变。 */
+private const val FADE_START = 0.82f

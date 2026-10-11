@@ -253,7 +253,7 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                                     statusMsg = "下载中（$label）…"
                                     scope.launch {
                                         when (val r = NCMusicApp.instance.musicRepository.downloadSong(song, q)) {
-                                            is ApiResult.Success -> statusMsg = "已下载：${r.data.name}"
+                                            is ApiResult.Success -> statusMsg = r.data
                                             is ApiResult.Error -> statusMsg = "下载失败：${r.message}"
                                         }
                                         downloading = false
@@ -446,17 +446,11 @@ fun PlayingIndicator(color: Color, modifier: Modifier = Modifier) {
 @Composable
 fun LoadingView(modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        // MD3 Loading indicator：
-        //  - 弧线在旋转的同时**弧长伸缩**（indeterminate 规范）
-        //  - 显示低对比轨道，使"未完成量"可读（MD3 要求 track 对比度不足 3:1 时需可见）
-        //  - 圆头线帽 + 4dp 线宽，对齐 MD3 的中等尺寸规格
-        CircularProgressIndicator(
-            modifier = Modifier.size(44.dp),
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            strokeWidth = 4.dp,
-            strokeCap = StrokeCap.Round,
-        )
+        // M3 Expressive Loading indicator：
+        // 官方 7 种 MaterialShapes 在弹簧驱动下依次变形，
+        // 同时整体以 4666ms 匀速旋转 —— 两条通道刻意不同步。
+        // 几何取自 AOSP，运动参数取自官方常量（详见该组件 KDoc）。
+        ExpressiveLoadingIndicator(modifier = Modifier.size(48.dp))
     }
 }
 

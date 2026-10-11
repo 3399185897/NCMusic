@@ -1,11 +1,17 @@
 package com.buddy.ncmusic.ui.screens.settings
 
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.ui.text.font.FontWeight
 import com.buddy.ncmusic.ui.components.CoverImage
 import com.buddy.ncmusic.util.ApiResult
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Add
 import com.buddy.ncmusic.ui.theme.AppShapes
@@ -272,6 +278,14 @@ class SettingsViewModel : ViewModel() {
         viewModelScope.launch { prefs.setPlayerColorEnabled(enabled) }
     }
 
+    fun setHomeShowRadar(show: Boolean) {
+        viewModelScope.launch { prefs.setHomeShowRadar(show) }
+    }
+
+    fun setHomeShowRecommend(show: Boolean) {
+        viewModelScope.launch { prefs.setHomeShowRecommend(show) }
+    }
+
     fun setCrossfadeEnabled(enabled: Boolean) {
         viewModelScope.launch { prefs.setCrossfadeEnabled(enabled) }
     }
@@ -320,6 +334,13 @@ private val startPageOptions = listOf(
     "home" to "推荐",
     "discover" to "发现",
     "library" to "我的",
+)
+
+/** 深色模式三态：开启 / 跟随系统 / 关闭 */
+private val themeModeOptions = listOf(
+    "dark" to "开启",
+    "system" to "跟随系统",
+    "light" to "关闭",
 )
 
 private val themeOptions = listOf(
@@ -478,31 +499,43 @@ fun SettingsScreen(
                 group = SettingsGroup.APPEARANCE,
                 selected = selectedGroup,
             ) {
-                // 深色模式：两个开关（深色模式 / 跟随系统）
-                // 三者互斥：深色模式、莫奈取色、自定义主题色
-                SwitchRow(
-                    title = "深色模式",
-                    subtitle = "固定使用深色配色（关闭则使用浅色）",
-                    checked = state.themeMode == "dark",
-                    onCheckedChange = { on -> vm.setThemeMode(if (on) "dark" else "light") },
-                )
-                SwitchRow(
-                    title = "跟随系统",
-                    subtitle = "深浅色随系统设置自动切换",
-                    checked = state.themeMode == "system",
-                    onCheckedChange = { on ->
-                        if (on) vm.setThemeMode("system")
-                        // 关闭「跟随系统」时回到浅色，避免状态悬空
-                        else vm.setThemeMode("light")
-                    },
-                )
+                // 深色模式：三联滑块（开启 / 跟随系统 / 关闭）
+                //
+                // 三态本就互斥，拆成两个独立开关会出现「两个都开」的非法组合，
+                // 也不易看清当前处于哪一态 —— 分段按钮是这种三选一的正确控件。
                 Text(
-                    text = "深色模式、自定义主题色、莫奈取色三者互斥",
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    "深色模式",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodyLarge,
                 )
+                SingleChoiceSegmentedButtonRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
+                ) {
+                    themeModeOptions.forEachIndexed { index, (value, label) ->
+                        SegmentedButton(
+                            selected = state.themeMode == value,
+                            onClick = { vm.setThemeMode(value) },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index = index,
+                                count = themeModeOptions.size,
+                            ),
+                        ) {
+                            Text(label)
+                        }
+                    }
+                }
+                // 当前是否处于深色（含「跟随系统」且系统为深色）
+                val darkOn = state.themeMode == "dark" ||
+                    (state.themeMode == "system" && isSystemInDarkTheme())
+
+                // 莫奈取色的禁用条件（互斥关系收敛为两条）：
+                //   1) 深色模式开启 —— 深色固定灰阶，取色无意义
+                //   2) 已选自定义主题色 —— 两者本就冲突
+                val dynamicDisabled = darkOn || state.customColor != 0L
                 SwitchRow(
+                    enabled = !dynamicDisabled,
                     title = "莫奈动态取色",
                     subtitle = "跟随系统壁纸取色（Android 12+）",
                     checked = state.dynamicColor,
@@ -519,7 +552,10 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     presetColors.forEach { (argb, _) ->
-                        val selected = state.customColor == argb
+                        // 深色下主题固定灰阶，自定义色不生效 —— 直接禁掉点击并降透明度，
+                        // 避免"点了没反应"的困惑
+                        val colorEnabled = !darkOn
+                        val selected = state.customColor == argb && colorEnabled
                         // 记录该色块在 root 中的中心坐标，用于颜色扩散动画起点
                         var centerInRoot by remember { mutableStateOf(Offset.Zero) }
                         Box(
@@ -530,12 +566,21 @@ fun SettingsScreen(
                                         Offset(coords.size.width / 2f, coords.size.height / 2f)
                                 }
                                 .background(Color(argb), CircleShape)
-                                .border(
-                                    width = if (selected) 3.dp else 0.dp,
-                                    color = if (selected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                                    shape = CircleShape,
+                                // 只在选中时挂 border：写成 width = 0.dp + Transparent
+                                // 在某些版本/合成路径下仍会描出一圈浅边，看起来像"白色阴影"
+                                .then(
+                                    if (selected) {
+                                        Modifier.border(
+                                            width = 3.dp,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            shape = CircleShape,
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
                                 )
-                                .clickable {
+                                .alpha(if (colorEnabled) 1f else 0.35f)
+                                .clickable(enabled = colorEnabled) {
                                     // 从点击处扩散新颜色
                                     ColorRevealState.launch(centerInRoot, Color(argb))
                                     vm.setCustomColor(if (selected) 0L else argb)
@@ -557,14 +602,37 @@ fun SettingsScreen(
                     onCheckedChange = vm::setPlayerColorEnabled,
                 )
 
+            // ---------- 主页组件 ----------
+            // 与「外观」同组：这两个开关改变的是主页的呈现内容
+            SectionCard(
+                title = "主页组件",
+                group = SettingsGroup.APPEARANCE,
+                selected = selectedGroup,
+            ) {
+                SwitchRow(
+                    title = "雷达歌单",
+                    subtitle = "私人雷达 + 推荐歌单拼接的正方形歌单墙",
+                    checked = state.homeShowRadar,
+                    onCheckedChange = vm::setHomeShowRadar,
+                )
+                SwitchRow(
+                    title = "推荐歌单",
+                    subtitle = "歌单墙以外的个性化歌单列表",
+                    checked = state.homeShowRecommend,
+                    onCheckedChange = vm::setHomeShowRecommend,
+                )
+            }
+
             // ---------- 启动页（自「行为」页移入）----------
             SectionCard(
                 title = "启动页",
                 group = SettingsGroup.APPEARANCE,
                 selected = selectedGroup,
             ) {
+                // 与其他区块保持同一套边距（标题用 vertical = 8.dp），
+                // 原先这里是 4.dp，导致该行比相邻区块更贴边、看起来"没对齐"
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     startPageOptions.forEach { (value, label) ->
@@ -777,8 +845,9 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
+                    // 标签必须落在**等距刻度**上：轨道分 4 段即 0/60/120/180。
+                    // 原先写 关闭/30/60/120/180（5 个）与滑块实际位置完全对不上
                     Text("关闭", style = MaterialTheme.typography.labelSmall)
-                    Text("30", style = MaterialTheme.typography.labelSmall)
                     Text("60", style = MaterialTheme.typography.labelSmall)
                     Text("120", style = MaterialTheme.typography.labelSmall)
                     Text("180 分钟", style = MaterialTheme.typography.labelSmall)
@@ -1075,17 +1144,26 @@ private fun SwitchRow(
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    // 禁用态：控件变灰且不可交互（用于"当前模式下该选项无意义"的场景）
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                // 禁用时降透明度：让"不可用"在视觉上先于交互被感知
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    .copy(alpha = if (enabled) 1f else 0.38f),
             )
         }
         // 拇指内嵌 ✓ / ✗ 图标并带淡入淡出：状态一眼可辨，无需看轨道颜色
@@ -1094,6 +1172,7 @@ private fun SwitchRow(
         //   选中 —— track=primary / thumb=onPrimary / icon=onPrimaryContainer
         //   未选中 —— track=surfaceContainerHighest / thumb=outline / icon=surfaceContainerHighest
         Switch(
+            enabled = enabled,
             checked = checked,
             onCheckedChange = onCheckedChange,
             thumbContent = {
@@ -1103,12 +1182,12 @@ private fun SwitchRow(
                     label = "switch_thumb",
                 ) { on ->
                     Icon(
-                        // 核心图标库无 Check，用 Add 旋转 45° 得到等效的 ✓
-                        imageVector = if (on) Icons.Default.Add else Icons.Default.Close,
+                        // ⚠️ 原先用 Add(＋) 旋转 45° 想得到 ✓ —— 但加号转 45° 是「×」，
+                        // 于是开启/关闭两个状态都显示成叉，无法区分。
+                        // material-icons-extended 已依赖，直接用 Check。
+                        imageVector = if (on) Icons.Default.Check else Icons.Default.Close,
                         contentDescription = null,
-                        modifier = Modifier
-                            .size(SwitchDefaults.IconSize)
-                            .rotate(if (on) 45f else 0f),
+                        modifier = Modifier.size(SwitchDefaults.IconSize),
                     )
                 }
             },
@@ -1226,7 +1305,10 @@ private fun RoundSlider(
                 // 3) 等距圆点 —— 全程唯一的一套点
                 val dotRadius = 2.5.dp.toPx()
                 repeat(TRACK_DOT_COUNT) { i ->
-                    val cx = size.width * (i + 0.5f) / TRACK_DOT_COUNT
+                    // 位置用 i/(N-1)：首点落在 0%、末点落在 100%，
+                    // 与下方 Arrangement.SpaceBetween 的刻度标签严格对应。
+                    // （原先用 (i+0.5)/N，点全部落在标签之间，两侧都在错位）
+                    val cx = size.width * i / (TRACK_DOT_COUNT - 1).toFloat()
                     drawCircle(
                         color = if (cx <= filledWidth) dotOnActive else dotOnInactive,
                         radius = dotRadius,
@@ -1244,7 +1326,7 @@ private fun RoundSlider(
  * 取 5 与 MD3 停靠点滑块的观感一致：点距足够疏朗，
  * 在窄轨道上也不会糊成一条线。
  */
-private const val TRACK_DOT_COUNT = 5
+private const val TRACK_DOT_COUNT = 4
 
 /** 关于页信息行 */
 @Composable

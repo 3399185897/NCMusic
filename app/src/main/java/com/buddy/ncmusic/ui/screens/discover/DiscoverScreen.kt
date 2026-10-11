@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.discover
 
+import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.layout.FlowRow
@@ -94,6 +95,8 @@ fun DiscoverScreen(
     val searching by searchVm.searching.collectAsState()
 
     var ranks by remember { mutableStateOf<List<RankData>>(emptyList()) }
+    // 榜单需并行请求 4 个歌单，加载期间原先是一片空白；补一个加载态
+    var ranksLoading by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
         // 四个榜单并行请求，避免顺序加载造成的长时间等待
         ranks = coroutineScope {
@@ -110,6 +113,7 @@ fun DiscoverScreen(
                 }
             }.awaitAll().filterNotNull()
         }
+        ranksLoading = false
     }
 
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
@@ -214,14 +218,25 @@ fun DiscoverScreen(
 
         item { SectionTitle("排行榜") }
         item {
-            LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
-                items(ranks) { rank ->
-                    RankCard(
-                        rank = rank,
-                        pageWidth = screenWidth - 32.dp,
-                        onPlay = onPlay,
-                        onOpenPlaylist = onOpenPlaylist,
-                    )
+            if (ranksLoading) {
+                // 用与全局加载态一致的 M3 Expressive 指示器，
+                // 避免此处出现"空白等待"或退化为另一种风格的转圈
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(140.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ExpressiveLoadingIndicator(modifier = Modifier.size(48.dp))
+                }
+            } else {
+                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
+                    items(ranks) { rank ->
+                        RankCard(
+                            rank = rank,
+                            pageWidth = screenWidth - 32.dp,
+                            onPlay = onPlay,
+                            onOpenPlaylist = onOpenPlaylist,
+                        )
+                    }
                 }
             }
         }

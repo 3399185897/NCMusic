@@ -121,8 +121,10 @@ fun StatsScreen(onBack: () -> Unit) {
                             modifier = Modifier.weight(1f),
                             label = "听歌天数",
                             value = "${activeDays} 天",
-                            // 用 secondary：tertiary 在动态取色下易与背景接近，导致对比不足
-                            accent = MaterialTheme.colorScheme.secondary,
+                            // 并列的第二张卡用 tertiary 做区分：
+                            // secondary 在 M3 里饱和度偏低，与 primary 的区分度不足，
+                            // 在取色下容易显得"发灰、像同色系"。
+                            accent = MaterialTheme.colorScheme.tertiary,
                         )
                     }
                 }

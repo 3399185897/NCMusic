@@ -25,8 +25,8 @@ android {
         applicationId = "com.buddy.ncmusic"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
 
         vectorDrawables { useSupportLibrary = true }
     }
@@ -103,6 +103,8 @@ dependencies {
     // Compose UI
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
+    // Material 3 Expressive 形状几何库（自带官方轮廓，无需自绘顶点）
+    implementation(libs.androidx.graphics.shapes)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)

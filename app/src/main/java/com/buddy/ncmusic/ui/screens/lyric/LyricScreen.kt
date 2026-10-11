@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.lyric
 
+import com.buddy.ncmusic.ui.components.rememberCoverColor
 import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,6 +60,9 @@ fun LyricScreen(onBack: () -> Unit) {
     val state by PlaybackManager.state.collectAsState()
     val lyrics = state.lyrics
     val listState = rememberLazyListState()
+
+    // 动态取色：当前行沿用封面主色，与播放器/悬浮岛保持同一套色彩语言
+    val coverColor = rememberCoverColor(state.song?.coverUrl)
 
     val prefs = NCMusicApp.instance.userPreferences
     val userState by prefs.userStateFlow.collectAsState(initial = UserState())
@@ -156,6 +160,8 @@ fun LyricScreen(onBack: () -> Unit) {
                             isCurrent = index == currentIndex,
                             isFocused = showIndicator && index == focusIndex,
                             customColor = customLyricColor,
+
+                            coverColor = coverColor,
                         )
                     }
                 }
@@ -197,6 +203,7 @@ private fun LyricRow(
     isCurrent: Boolean,
     isFocused: Boolean,
     customColor: Long,
+    coverColor: Color?,
 ) {
     val emphasize = isCurrent || isFocused
 
@@ -208,7 +215,13 @@ private fun LyricRow(
         isFocused -> MaterialTheme.colorScheme.onSurface
         isCurrent -> {
             val custom = customColor.toInt()
-            if (custom != 0 && custom != -1) Color(custom) else MaterialTheme.colorScheme.primary
+            when {
+                // 用户显式指定过歌词色则优先尊重
+                custom != 0 && custom != -1 -> Color(custom)
+                // 否则用封面动态取色
+                coverColor != null -> coverColor
+                else -> MaterialTheme.colorScheme.primary
+            }
         }
         else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
     }

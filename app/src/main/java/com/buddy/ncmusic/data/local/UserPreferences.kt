@@ -71,6 +71,10 @@ data class UserState(
     val lyricAutoAlign: Boolean = true,
     /** 播放器封面取色：根据封面主色渲染播放器与悬浮岛；关闭后统一使用主题色 */
     val playerColorEnabled: Boolean = true,
+    /** 主页是否显示「雷达歌单」区块 */
+    val homeShowRadar: Boolean = true,
+    /** 主页是否显示「推荐歌单」区块 */
+    val homeShowRecommend: Boolean = true,
     /** 切歌淡入淡出：切换歌曲时音量渐变过渡 */
     val crossfadeEnabled: Boolean = false,
     /** 淡入淡出时长（秒，1~8） */
@@ -115,6 +119,8 @@ class UserPreferences(private val context: Context) {
         val CACHE_DIR_URI = stringPreferencesKey("cache_dir_uri")
         val LYRIC_AUTO_ALIGN = booleanPreferencesKey("lyric_auto_align")
         val PLAYER_COLOR_ENABLED = booleanPreferencesKey("player_color_enabled")
+        val HOME_SHOW_RADAR = booleanPreferencesKey("home_show_radar")
+        val HOME_SHOW_RECOMMEND = booleanPreferencesKey("home_show_recommend")
         val CROSSFADE_ENABLED = booleanPreferencesKey("crossfade_enabled")
         val CROSSFADE_SECONDS = intPreferencesKey("crossfade_seconds")
     }
@@ -154,6 +160,8 @@ class UserPreferences(private val context: Context) {
             cacheDirUri = p[Keys.CACHE_DIR_URI] ?: "",
             lyricAutoAlign = p[Keys.LYRIC_AUTO_ALIGN] ?: true,
             playerColorEnabled = p[Keys.PLAYER_COLOR_ENABLED] ?: true,
+            homeShowRadar = p[Keys.HOME_SHOW_RADAR] ?: true,
+            homeShowRecommend = p[Keys.HOME_SHOW_RECOMMEND] ?: true,
             crossfadeEnabled = p[Keys.CROSSFADE_ENABLED] ?: false,
             crossfadeSeconds = p[Keys.CROSSFADE_SECONDS] ?: 3,
         )
@@ -212,6 +220,14 @@ class UserPreferences(private val context: Context) {
 
     suspend fun setPlayerColorEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.PLAYER_COLOR_ENABLED] = enabled }
+    }
+
+    suspend fun setHomeShowRadar(show: Boolean) {
+        context.dataStore.edit { it[Keys.HOME_SHOW_RADAR] = show }
+    }
+
+    suspend fun setHomeShowRecommend(show: Boolean) {
+        context.dataStore.edit { it[Keys.HOME_SHOW_RECOMMEND] = show }
     }
 
     suspend fun setCrossfadeEnabled(enabled: Boolean) {

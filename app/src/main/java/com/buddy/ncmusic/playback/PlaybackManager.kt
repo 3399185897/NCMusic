@@ -46,6 +46,14 @@ object PlaybackManager {
         val isLoading: Boolean = false,
         val isLiked: Boolean = false,
         val quality: String = "standard",
+        /**
+         * 播放失败的原因（供 UI 以 Toast 形式提示）。
+         *
+         * 之所以需要它：解析播放地址失败时若静默返回，
+         * 用户看到的是「点了播放毫无反应」，无法判断是网络、
+         * 未登录还是版权受限 —— 体验上等同于「功能坏了」。
+         */
+        val errorMessage: String? = null,
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -226,9 +234,13 @@ object PlaybackManager {
         scope.launch {
             val uri = resolveUri(song)
             if (uri == null) {
-                _state.update { it.copy(isLoading = false) }
+                _state.update {
+                    it.copy(isLoading = false, errorMessage = playFailureReason())
+                }
                 return@launch
             }
+            // 成功进入播放流程时清掉上一次的错误
+            _state.update { it.copy(errorMessage = null) }
             runCatching {
                 player.setMediaItem(MediaItem.fromUri(uri))
                 player.prepare()
@@ -262,6 +274,29 @@ object PlaybackManager {
             is ApiResult.Success -> r.data
             is ApiResult.Error -> null
         }
+    }
+
+    /**
+     * 生成播放失败的用户可读原因。
+     *
+     * 网易云对**未登录**用户不返回播放地址（实测所有音质档均返回空 url），
+     * 这是服务端策略而非客户端缺陷 —— 因此这里把最常见的原因单独识别出来，
+     * 直接引导用户登录，而不是给出含糊的「播放失败」。
+     */
+    private suspend fun playFailureReason(): String {
+        val loggedIn = runCatching {
+            appContext.userPreferences.userStateFlow.first().isLoggedIn
+        }.getOrDefault(false)
+        return if (loggedIn) {
+            "该歌曲暂无可用播放源（可能受版权限制或需要会员）"
+        } else {
+            "未登录状态下无法获取播放地址，请先登录后再试"
+        }
+    }
+
+    /** 消费并清除播放错误（UI 弹出提示后调用，避免重组时重复提示） */
+    fun clearError() {
+        _state.update { it.copy(errorMessage = null) }
     }
 
     /** 决定当前使用的音质：手动选择优先，否则按网络类型（WiFi / 流量）自动取上限 */

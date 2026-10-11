@@ -116,6 +116,24 @@ fun PlayerScreen(
     val song = state.song
     var qualityMenuOpen by remember { mutableStateOf(false) }
 
+    // 本地 / 已下载曲目：不参与在线音质切换。
+    //
+    // 判据用 localPath —— 本地扫描与下载都会写入该字段，
+    // 而在线歌曲的 localPath 恒为 null。
+    val isLocalTrack = song?.localPath?.isNotBlank() == true
+
+    // 音质标签的显示文本。
+    //
+    // 本地文件没有「音质档位」可言，展示**真实编码格式**（由扩展名推断），
+    // 而不是沿用当前设置里的在线音质 —— 否则会出现
+    // 「播着 MP3，顶上却写着超清母带」这种误导。
+    val qualityText = if (isLocalTrack) {
+        val ext = song?.localPath?.substringAfterLast('.', "")?.uppercase().orEmpty()
+        if (ext.isNotBlank()) ext else "本地"
+    } else {
+        qualityLabel(state.quality)
+    }
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs = NCMusicApp.instance.userPreferences
@@ -230,11 +248,26 @@ fun PlayerScreen(
                     textAlign = TextAlign.Center,
                 )
                 Box {
-                    IconButton(onClick = { qualityMenuOpen = true }) {
+                    // 不用 IconButton —— 它是**固定 48dp** 的图标按钮容器，
+                    // 而音质文案长度差异很大（「标准」2 字 →「超清母带」4 字），
+                    // 4 字时会超出 48dp 被裁掉，表现为「文字显示不全」。
+                    // 改用自适应宽度的可点击 Box，并保留 ≥48dp 的触摸高度。
+                    Box(
+                        modifier = Modifier
+                            .clip(AppShapes.of(10.dp))
+                            .clickable(enabled = !isLocalTrack) { qualityMenuOpen = true }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
                         Text(
-                            text = qualityLabel(state.quality),
+                            text = qualityText,
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (isLocalTrack) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                         )
                     }
                     DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { qualityMenuOpen = false }) {

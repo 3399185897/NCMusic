@@ -1,5 +1,9 @@
 package com.buddy.ncmusic.ui.screens.home
 
+import com.buddy.ncmusic.NCMusicApp
+import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import com.buddy.ncmusic.ui.components.SquaredMosaic
 import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.foundation.background
@@ -72,6 +76,14 @@ fun HomeScreen(
     val listState = rememberLazyListState()
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
 
+    // 主页组件显隐（设置 → 外观 → 主页组件）
+    val prefs by NCMusicApp.instance.userPreferences.userStateFlow
+        .collectAsState(initial = null)
+    val showRadar = prefs?.homeShowRadar ?: true
+    val showRecommend = prefs?.homeShowRecommend ?: true
+    // 下拉刷新状态：提到 when 外层，避免在 else 分支里再包一层作用域
+    val ptrState = rememberPullToRefreshState()
+
     when {
         loading && playlists.isEmpty() && dailySongs.isEmpty() -> LoadingView(Modifier)
         error != null && playlists.isEmpty() && dailySongs.isEmpty() -> ErrorView(
@@ -82,7 +94,27 @@ fun HomeScreen(
         else -> PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = vm::refresh,
+            state = ptrState,
             modifier = Modifier.fillMaxSize(),
+            // 指示器换用 M3 Expressive 的 Loading indicator，
+            // 与加载态共用同一套形状变形语言（几何取自官方 MaterialShapes）
+            indicator = {
+                // 用 IndicatorBox（带 content 槽），借用官方指示器的
+                // 容器、位移与显现动画，仅把内部图形换成 Expressive 形状
+                PullToRefreshDefaults.IndicatorBox(
+                    state = ptrState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                    // 官方指示器默认带容器底色 + elevation 阴影，
+                    // 而 Expressive 形状本身是实心图形，再套一层带阴影的圆形容器
+                    // 会在图形周围出现一圈灰边 —— 故容器透明、阴影归零。
+                    containerColor = Color.Transparent,
+                    elevation = 0.dp,
+                ) {
+                    // 下拉场景用 28dp，贴合指示器原有的紧凑比例
+                    ExpressiveLoadingIndicator(modifier = Modifier.size(28.dp))
+                }
+            },
         ) {
             ListWithScrollIndicator(
                 listState = listState,
@@ -109,7 +141,7 @@ fun HomeScreen(
                     }
 
                     // ---------- 雷达歌单（不同大小的圆角正方形拼贴）----------
-                    if (radarPlaylists.isNotEmpty()) {
+                    if (showRadar && radarPlaylists.isNotEmpty()) {
                         item { SectionTitle("雷达歌单") }
                         item {
                             SquaredMosaic(
@@ -120,20 +152,22 @@ fun HomeScreen(
                     }
 
                     // ---------- 推荐歌单 ----------
-                    item { SectionTitle("推荐歌单") }
-                    item {
-                        LazyHorizontalGrid(
-                            rows = GridCells.Fixed(2),
-                            modifier = Modifier.height(400.dp),
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            items(playlists) { playlist ->
-                                PlaylistCard(
-                                    playlist = playlist,
-                                    onClick = { onOpenPlaylist(playlist.id) },
-                                )
+                    if (showRecommend) {
+                        item { SectionTitle("推荐歌单") }
+                        item {
+                            LazyHorizontalGrid(
+                                rows = GridCells.Fixed(2),
+                                modifier = Modifier.height(400.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                items(playlists) { playlist ->
+                                    PlaylistCard(
+                                        playlist = playlist,
+                                        onClick = { onOpenPlaylist(playlist.id) },
+                                    )
+                                }
                             }
                         }
                     }
