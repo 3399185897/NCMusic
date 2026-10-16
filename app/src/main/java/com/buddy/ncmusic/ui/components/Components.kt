@@ -268,15 +268,17 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
             title = { Text("选择下载音质") },
             text = {
                 Column {
-                    // 只列出该曲目支持的档位（与播放器音质菜单同一口径）——
-                    // 列出做不到的档位会让用户"选了没效果"
-                    AudioQuality.supportedBy(song.maxBr).reversed().forEach { q ->
+                    // 与播放器音质面板**同一口径**：官方展示的档位、
+                    // 按高低排序、超出该曲目能力的置灰。
+                    // （download 走同一套 level token，两边不一致会让用户困惑）
+                    AudioQuality.visibleDescending.forEach { q ->
+                        val available = AudioQuality.availableFor(q.level, song.maxBr)
                         val sizeText = estimateSizeMb(song.duration, q.kbps)
                             .let { if (it > 0) "约 %.1f MB".format(it) else "大小未知" }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
+                                .clickable(enabled = available) {
                                     showQualityPicker = false
                                     // 交给全局控制器：进度在对话框与播放器面板间共享
                                     DownloadController.download(song, q.level, scope)
@@ -284,7 +286,16 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                                 .padding(vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(q.label, modifier = Modifier.weight(1f))
+                            Text(
+                                // 名称与规格都用官方文案
+                                text = if (available) q.label else "${q.label}（本曲不支持）",
+                                modifier = Modifier.weight(1f),
+                                color = if (available) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                },
+                            )
                             Text(
                                 text = sizeText,
                                 style = MaterialTheme.typography.bodySmall,

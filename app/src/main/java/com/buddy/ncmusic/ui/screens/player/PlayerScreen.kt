@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.player
 
+import com.buddy.ncmusic.ui.components.QualitySheetContent
 import androidx.compose.material3.Switch
 import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import com.buddy.ncmusic.ui.components.DownloadController
@@ -129,7 +130,10 @@ fun PlayerScreen(
 ) {
     val state by PlaybackManager.state.collectAsState()
     val song = state.song
-    var qualityMenuOpen by remember { mutableStateOf(false) }
+    // 音质面板（ModalBottomSheet）——
+    // 原先是 DropdownMenu，只能显示一行短标签；
+    // 官方音质面板还包含英文名、描述、规格与会员标记，下拉菜单装不下。
+    var qualitySheetOpen by remember { mutableStateOf(false) }
     // 歌曲详情面板（下载 / 分享 / 关于）
     var songDetailSheet by remember { mutableStateOf(false) }
     // 详情面板内的下载音质选择
@@ -307,7 +311,7 @@ fun PlayerScreen(
                     Box(
                         modifier = Modifier
                             .clip(AppShapes.of(10.dp))
-                            .clickable(enabled = !isLocalTrack) { qualityMenuOpen = true }
+                            .clickable(enabled = !isLocalTrack) { qualitySheetOpen = true }
                             .padding(horizontal = 12.dp, vertical = 8.dp),
                     ) {
                         Text(
@@ -322,27 +326,8 @@ fun PlayerScreen(
                             },
                         )
                     }
-                    DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { qualityMenuOpen = false }) {
-                        // ⚠️ 只列出**该曲目官方支持**的档位。
-                        //
-                        // 原先固定列出全部 6 档 —— 若某首歌最高只到「极高」，
-                        // 用户选「无损」后服务端拿不到地址，会静默降级回原档位，
-                        // 表现为"选了音质完全不生效"。
-                        //
-                        // `song.maxBr` 为 0 时（接口未给出）不限制，退化为原行为。
-                        val available = AudioQuality.supportedBy(song?.maxBr ?: 0)
-                        available.forEach { q ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(if (q.level == state.quality) "${q.label} ✓" else q.label)
-                                },
-                                onClick = {
-                                    PlaybackManager.changeQuality(q.level)
-                                    qualityMenuOpen = false
-                                },
-                            )
-                        }
-                    }
+                    // 音质面板由页面底部统一弹出（见下方 ModalBottomSheet），
+                    // 这里不再挂 DropdownMenu
                 }
             }
 
@@ -509,6 +494,23 @@ fun PlayerScreen(
                             showSongInfo = true
                         }
                     }
+                }
+            }
+
+            // ---------- 音质选择面板 ----------
+            if (qualitySheetOpen) {
+                ModalBottomSheet(
+                    onDismissRequest = { qualitySheetOpen = false },
+                    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                ) {
+                    QualitySheetContent(
+                        song = state.song,
+                        currentLevel = state.quality,
+                        onPick = { q ->
+                            PlaybackManager.changeQuality(q.level)
+                            qualitySheetOpen = false
+                        },
+                    )
                 }
             }
 

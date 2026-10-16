@@ -495,13 +495,23 @@ class DirectApi {
      *
      * 顺序不是随便排的：每次都退到低一档，直到 `standard`。
      */
-    private fun qualityFallbackChain(level: String): List<String> = when (level) {
-        "jymaster" -> listOf("jymaster", "hires", "lossless", "exhigh", "higher", "standard")
-        "hires" -> listOf("hires", "lossless", "exhigh", "higher", "standard")
-        "lossless" -> listOf("lossless", "exhigh", "higher", "standard")
-        "exhigh" -> listOf("exhigh", "higher", "standard")
-        "higher" -> listOf("higher", "standard")
-        else -> listOf("standard")
+    private fun qualityFallbackChain(level: String): List<String> {
+        // 与官方一致的 7 档（详见 AudioQuality）：
+        //   standard < exhigh < lossless < hires < {jyeffect, sky} < jymaster
+        //
+        // 环绕声 / 全景声（jyeffect / sky）属于**空间音频处理**，
+        // 拿不到时退回高解析音频（hires）而非直接掉到 MP3 ——
+        // 这样至少保住解析度，听感上比降到 320k 更接近用户预期。
+        val hqFallback = listOf("hires", "lossless", "exhigh", "standard")
+        return when (level) {
+            "jymaster" -> listOf("jymaster") + hqFallback
+            "sky" -> listOf("sky") + hqFallback
+            "jyeffect" -> listOf("jyeffect") + hqFallback
+            "hires" -> listOf("hires", "lossless", "exhigh", "standard")
+            "lossless" -> listOf("lossless", "exhigh", "standard")
+            "exhigh" -> listOf("exhigh", "standard")
+            else -> listOf("standard")
+        }
     }
 
     /**
