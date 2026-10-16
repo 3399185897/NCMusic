@@ -703,10 +703,14 @@ fun MiniPlayer(
                     ),
                 ) {
                     if (loading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
+                        // 加载态改用 Expressive 多边形指示器，
+                        // 与下拉刷新、首页加载、搜索加载保持同一套视觉语言。
+                        //
+                        // 尺寸说明：多边形只占容器的 0.79（官方 ActiveIndicatorScale），
+                        // 因此容器取 28dp 才能得到与原来 22dp 圆环相当的分量。
+                        ExpressiveLoadingIndicator(
+                            modifier = Modifier.size(28.dp),
                             color = Color.White,
-                            strokeWidth = 2.dp,
                         )
                     } else {
                         Icon(

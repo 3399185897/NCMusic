@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.player
 
+import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import com.buddy.ncmusic.ui.components.DownloadController
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.MoreVert
@@ -21,7 +22,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.scale
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.scaleIn
@@ -778,10 +778,11 @@ fun PlayerScreen(
                             contentAlignment = Alignment.Center,
                         ) {
                             if (state.isLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp),
+                                // 同悬浮岛：加载态统一用多边形指示器。
+                                // 容器 30dp ≈ 原 24dp 圆环的视觉分量（0.79 缩放）。
+                                ExpressiveLoadingIndicator(
+                                    modifier = Modifier.size(30.dp),
                                     color = MaterialTheme.colorScheme.surface,
-                                    strokeWidth = 2.5.dp,
                                 )
                             } else {
                                 // 图标切换：缩放 + 淡入淡出，避免生硬跳变
