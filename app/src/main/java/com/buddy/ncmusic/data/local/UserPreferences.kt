@@ -65,12 +65,17 @@ data class UserState(
     val lyricOverlay: Boolean = false,
     /** 歌词字体颜色（ARGB） */
     /**
-     * 歌词当前行颜色。`0` 表示**未自定义**，此时跟随封面动态取色。
+     * 歌词颜色（ARGB）。
      *
-     * 原默认值为 `0xFFFFFFFF`（白色），与"是否自定义"的判断条件
-     * （`custom != 0 && custom != -1`）冲突 —— 导致封面取色从未生效。
+     * ⚠️ **这里永远是一个可直接使用的颜色，不会是 0。**
+     *
+     * DataStore 中用 `0` 表示"用户未自定义过"，但读取时会**归一化**
+     * 成 [DEFAULT_LYRIC_COLOR]。这么做的原因：若把 `0` 直接透出，
+     * 任何"拿它当颜色用"的地方都会拿到**全透明**——
+     * 例如 `LyricWindowService` 的 `setTextColor(0)` 会让桌面歌词
+     * 彻底不可见。约定只保留在存储层，消费端不必各自防御。
      */
-    val lyricColor: Long = 0,
+    val lyricColor: Long = UserPreferences.DEFAULT_LYRIC_COLOR,
     /** 歌词字号（sp） */
     val lyricFontSize: Int = 18,
     /** 歌词悬浮窗横向位置 */
@@ -166,7 +171,10 @@ class UserPreferences(private val context: Context) {
                 .split(SEP)
                 .filter { it.isNotBlank() },
             lyricOverlay = p[Keys.LYRIC_OVERLAY] ?: false,
-            lyricColor = p[Keys.LYRIC_COLOR] ?: 0,
+            // 0（或缺失）= 未自定义 -> 归一化为默认色，
+            // 避免下游拿到全透明色值
+            lyricColor = (p[Keys.LYRIC_COLOR] ?: 0L).takeIf { it != 0L }
+                ?: DEFAULT_LYRIC_COLOR,
             lyricFontSize = p[Keys.LYRIC_FONT_SIZE] ?: 18,
             lyricX = p[Keys.LYRIC_X] ?: 0,
             lyricY = p[Keys.LYRIC_Y] ?: 320,
@@ -182,6 +190,14 @@ class UserPreferences(private val context: Context) {
     }
 
     companion object {
+        /**
+         * 歌词颜色默认值（白色）。
+         *
+         * 与设置页颜色列表的首项对应；两者必须一致，
+         * 否则"未自定义"状态在颜色选择器中无法体现为选中。
+         */
+        const val DEFAULT_LYRIC_COLOR = 0xFFFFFFFFL
+
         /** 搜索历史分隔符（避免与关键词中可能出现的逗号冲突） */
         private const val SEP = "\u0001"
     }

@@ -400,6 +400,7 @@ private val cacheOptions = listOf(
     2048 to "2 GB",
 )
 
+/** 可选歌词颜色。首项须与 `UserPreferences.DEFAULT_LYRIC_COLOR` 保持一致。 */
 private val lyricColors = listOf(
     0xFFFFFFFF to "白",
     0xFF000000 to "黑",
@@ -918,22 +919,67 @@ fun SettingsScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                Row(Modifier.padding(horizontal = 16.dp)) {
-                    lyricColors.forEach { (argb, _) ->
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // state.lyricColor 已在数据层归一化（0 -> 默认色），
+                    // 这里直接比较即可 —— 无需重复防御，
+                    // 否则归一化规则会散落在多处，改一处就漏一处。
+                    lyricColors.forEach { (argb, label) ->
                         val selected = state.lyricColor == argb
+
+                        // 选中态改为「外环 + 留白 + 圆点」，而不是在圆点上直接描粗边。
+                        //
+                        // 原实现是给 32dp 的圆点本体画 3dp border ——
+                        // border 居中于边界，会**向内侵占约 1.5dp**，
+                        // 于是选中时颜色圆点看起来反而变小了；
+                        // 且 3dp 的品牌色环紧贴圆点颜色，两种颜色直接相切，
+                        // 观感很跳。
+                        //
+                        // 现在把「指示环」与「颜色本身」分成两层，
+                        // 中间留出 5dp 呼吸，颜色圆点尺寸在任何状态下都恒定不变。
+                        // 环色用 onSurface（中性色）而非主题色 ——
+                        // 圆点本身已有 7 种色相，再加一个品牌红只会更杂。
                         Box(
                             modifier = Modifier
-                                .padding(end = 10.dp)
-                                .size(32.dp)
-                                .background(Color(argb), CircleShape)
-                                .border(
-                                    width = if (selected) 3.dp else 1.dp,
-                                    color = if (selected) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outlineVariant,
-                                    shape = CircleShape,
+                                .padding(end = 6.dp)
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .then(
+                                    if (selected) {
+                                        Modifier.border(
+                                            width = 2.dp,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            shape = CircleShape,
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
                                 )
                                 .clickable { vm.setLyricColor(argb) },
-                        )
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(argb))
+                                    .then(
+                                        // 未选中时给一层细描边：
+                                        // 白色圆点在浅色背景上否则会"消失"
+                                        if (selected) {
+                                            Modifier
+                                        } else {
+                                            Modifier.border(
+                                                width = 1.dp,
+                                                color = MaterialTheme.colorScheme.outlineVariant,
+                                                shape = CircleShape,
+                                            )
+                                        },
+                                    ),
+                            )
+                        }
                     }
                 }
 
