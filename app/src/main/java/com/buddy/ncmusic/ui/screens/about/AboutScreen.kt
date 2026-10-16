@@ -1,5 +1,16 @@
 package com.buddy.ncmusic.ui.screens.about
 
+import kotlinx.coroutines.launch
+import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
+import com.buddy.ncmusic.data.update.UpdateChecker
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.width
 import android.os.Build
 import com.buddy.ncmusic.ui.theme.AppShapes
@@ -71,6 +82,34 @@ fun AboutScreen(onBack: () -> Unit) {
         }.getOrNull().orEmpty().ifBlank { "1.1.0" }
     }
 
+    // ---------- 检查更新 ----------
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var checkResult by remember { mutableStateOf<UpdateChecker.Result?>(null) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+
+    /** 打开浏览器跳转到 Release 页面 */
+    fun openRelease(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+
+    fun runCheck() {
+        if (checking) return
+        checking = true
+        checkResult = null
+        scope.launch {
+            val r = UpdateChecker.check(versionName)
+            checkResult = r
+            checking = false
+            if (r is UpdateChecker.Result.Available) showUpdateDialog = true
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -109,6 +148,79 @@ fun AboutScreen(onBack: () -> Unit) {
                     text = "版本 v$versionName",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                // 检查更新：检查结果就地以文字反馈，
+                // 有新版时另弹对话框提供「前往下载」
+                OutlinedButton(onClick = { runCheck() }, enabled = !checking) {
+                    if (checking) {
+                        ExpressiveLoadingIndicator(modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("检查中…")
+                    } else {
+                        Text("检查更新")
+                    }
+                }
+
+                // 无更新 / 失败时就地反馈（有更新走对话框，此处不重复提示）
+                val hint = when (val r = checkResult) {
+                    is UpdateChecker.Result.UpToDate -> "已是最新版本"
+                    is UpdateChecker.Result.Failed -> r.message
+                    else -> null
+                }
+                hint?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (checkResult is UpdateChecker.Result.Failed) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+
+            // ---------- 发现新版本 ----------
+            val available = (checkResult as? UpdateChecker.Result.Available)?.info
+            if (showUpdateDialog && available != null) {
+                AlertDialog(
+                    onDismissRequest = { showUpdateDialog = false },
+                    title = { Text("发现新版本 ${available.tag}") },
+                    text = {
+                        // 更新说明可能很长，限制在可滚动区域内
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 260.dp)
+                                .verticalScroll(rememberScrollState()),
+                        ) {
+                            Text(
+                                text = "当前版本 v$versionName",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (available.notes.isNotBlank()) {
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    text = available.notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showUpdateDialog = false
+                            openRelease(available.htmlUrl)
+                        }) { Text("前往下载") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showUpdateDialog = false }) { Text("稍后") }
+                    },
                 )
             }
 
