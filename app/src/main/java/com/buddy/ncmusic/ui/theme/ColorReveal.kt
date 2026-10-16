@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.theme
 
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -63,10 +64,20 @@ fun ColorRevealOverlay(durationMillis: Int = 820) {
     val revealColor = ColorRevealState.color ?: return
     val origin = ColorRevealState.origin
 
+    // 系统「减少动态效果」：跳过扩散动画，直接完成切换。
+    // 主题色本身仍会生效 —— 只是不再播放 820ms 的全屏覆盖动效。
+    val reduceMotion = rememberReduceMotion()
+
     val progress = remember(token) { Animatable(0f) }
 
-    LaunchedEffect(token) {
+    LaunchedEffect(token, reduceMotion) {
         progress.snapTo(0f)
+        if (reduceMotion) {
+            // 直接置为终态并立刻清理，不播放动画
+            progress.snapTo(1f)
+            ColorRevealState.clear()
+            return@LaunchedEffect
+        }
         progress.animateTo(
             targetValue = 1f,
             animationSpec = tween(durationMillis, easing = FastOutSlowInEasing),

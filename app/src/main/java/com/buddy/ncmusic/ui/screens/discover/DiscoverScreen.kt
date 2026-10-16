@@ -1,5 +1,10 @@
 package com.buddy.ncmusic.ui.screens.discover
 
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.OutlinedButton
 import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import com.buddy.ncmusic.ui.theme.AppShapes
@@ -63,6 +68,35 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 
 /** 榜单定义：仅保留官方四大主榜 */
+/**
+ * 搜索失败提示。
+ *
+ * 与「没有找到相关歌曲」（正常空结果）区分开的必要性：
+ * 两者对用户意味着**完全不同的下一步动作** ——
+ * 前者应重试或检查网络，后者说明关键词本身没匹配到内容。
+ */
+@Composable
+private fun SearchFailure(
+    message: String,
+    canRetry: Boolean,
+    onRetry: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error,
+        )
+        if (canRetry) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = onRetry) { Text("重试") }
+        }
+    }
+}
+
 private val RANK_DEFS = listOf(
     19723756L to "飙升榜",
     3778678L to "热歌榜",
@@ -93,6 +127,12 @@ fun DiscoverScreen(
     val history by searchVm.history.collectAsState()
     val results by searchVm.results.collectAsState()
     val searching by searchVm.searching.collectAsState()
+    // 错误与"是否搜过"：用于把**网络失败**与**正常空结果**区分开。
+    // 此前两者共用同一句"没有找到相关歌曲" —— 网络断了也这么提示，
+    // 用户既不知道真正原因，也没有重试入口。
+    val searchError by searchVm.error.collectAsState()
+    val searchErrorKind by searchVm.errorKind.collectAsState()
+    val searched by searchVm.searched.collectAsState()
 
     var ranks by remember { mutableStateOf<List<RankData>>(emptyList()) }
     // 榜单需并行请求 4 个歌单，加载期间原先是一片空白；补一个加载态
@@ -126,8 +166,33 @@ fun DiscoverScreen(
                 onOpenIdentify = onOpenIdentify,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
-            if (searching) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (results.isEmpty() && !searching) {
+            // 搜索加载态改用 Expressive 多边形加载指示器 ——
+            // 与下拉刷新、首页加载保持同一套视觉语言。
+            // 原先这里是通栏 LinearProgressIndicator（细长滑块），
+            // 与全局其它加载场景的"变形多边形"风格不一致。
+            //
+            // 外层套一个固定高度的居中容器：指示器是方形动画，
+            // 直接放进 Column 会导致内容区跳动（搜索开始/结束各抖一次）。
+            if (searching) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(72.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    ExpressiveLoadingIndicator(modifier = Modifier.size(40.dp))
+                }
+            }
+            // 三级分支，括号结构与原 if/else 一致：
+            //   失败（可重试） > 确实搜过但无结果 > 结果列表
+            if (searchError != null && !searching) {
+                SearchFailure(
+                    message = searchError!!,
+                    // 网络类失败才给重试；解析错误重试通常无效
+                    canRetry = searchErrorKind != ApiResult.ErrorKind.PARSE,
+                    onRetry = { searchVm.searchNow(query) },
+                )
+            } else if (searched && results.isEmpty() && !searching) {
                 Text(
                     text = "没有找到相关歌曲",
                     modifier = Modifier.padding(24.dp),
@@ -138,7 +203,7 @@ fun DiscoverScreen(
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
                     ) {
-                    items(results) { song ->
+                    items(results, key = { it.id }) { song ->
                         SongListItem(
                             song = song,
                             onClick = { onPlay(results, results.indexOf(song)) },
@@ -177,7 +242,7 @@ fun DiscoverScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    items(history) { keyword ->
+                    items(history, key = { it }) { keyword ->
                         InputChip(
                             selected = false,
                             onClick = { searchVm.searchNow(keyword) },
@@ -228,15 +293,49 @@ fun DiscoverScreen(
                     ExpressiveLoadingIndicator(modifier = Modifier.size(48.dp))
                 }
             } else {
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
-                    items(ranks) { rank ->
+                // 卡片宽度 = 屏宽 - 左16 - 右16 - 露出下一张的 32dp。
+                //
+                // 原先取 `screenWidth - 32.dp`（正好一屏），横向滚动时
+                // **看不到下一张的任何边缘**，用户不会意识到可以左右滑。
+                // 留 32dp 露出量后，既有"还有更多"的视觉暗示，
+                // 又保证卡内 10 首歌的信息密度不下降。
+                val cardWidth = (screenWidth - 64.dp).coerceAtLeast(240.dp)
+                val ranksListState = rememberLazyListState()
+
+                LazyRow(
+                    state = ranksListState,
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    // 吸附翻页：松手后自动对齐到卡片边界，
+                    // 避免停在"半张卡"的尴尬位置（原先无吸附，停止位置随意）
+                    flingBehavior = rememberSnapFlingBehavior(ranksListState),
+                ) {
+                    items(ranks, key = { it.id }) { rank ->
                         RankCard(
                             rank = rank,
-                            pageWidth = screenWidth - 32.dp,
+                            pageWidth = cardWidth,
                             onPlay = onPlay,
                             onOpenPlaylist = onOpenPlaylist,
                         )
                     }
+                }
+
+                // 位置反馈：告诉用户当前在第几张 / 共几张
+                if (ranks.size > 1) {
+                    val current by remember {
+                        derivedStateOf {
+                            (ranksListState.firstVisibleItemIndex + 1).coerceIn(1, ranks.size)
+                        }
+                    }
+                    Text(
+                        text = "$current / ${ranks.size}",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp, end = 20.dp),
+                        textAlign = TextAlign.End,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -263,8 +362,15 @@ private fun RankCard(
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
+                // 榜单名长短不一（"云音乐飙升榜" vs "云音乐中文说唱榜"），
+                // 不限制行数会与右侧「查看更多」争夺宽度并挤压布局。
+                // 限 1 行 + 省略号：始终单行显示，长名超出部分以 … 收尾。
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            TextButton(onClick = { onOpenPlaylist(rank.id) }) { Text("查看更多 ›") }
+            TextButton(onClick = { onOpenPlaylist(rank.id) }) {
+                Text("查看更多 ›", maxLines = 1)
+            }
         }
         rank.songs.forEachIndexed { index, song ->
             Row(

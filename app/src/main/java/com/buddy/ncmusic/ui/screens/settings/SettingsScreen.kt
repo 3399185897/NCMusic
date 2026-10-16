@@ -152,26 +152,37 @@ class SettingsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * 刷新"当前缓存"显示值。
+     *
+     * ⚠️ 口径必须与「最大缓存大小」上限**一致**。
+     *
+     * 原先统计的是 `cacheDir` **全目录**（含下载中转等临时工作文件），
+     * 而容量上限只作用于 `cacheDir/ncmusic_cache/` ——
+     * 于是用户把上限设为 1 GB，界面却可能显示 1.5 GB（临时文件被计入），
+     * 看上去像是"限制完全没生效"，实际只是两个数字口径不同。
+     *
+     * 现改为读取 [CacheManager.currentSize]，与淘汰逻辑管理同一批文件。
+     */
     fun refreshCacheSize() {
         viewModelScope.launch {
-            _cacheSize.value = withContext(Dispatchers.IO) { dirSize(context.cacheDir) }
+            _cacheSize.value = NCMusicApp.instance.cacheManager.currentSize()
         }
     }
 
+    /**
+     * 手动清空缓存。
+     *
+     * 改走 [CacheManager.clearAll] 统一入口 ——
+     * 原先这里自己遍历 cacheDir 删除，与容量淘汰逻辑各写一份，
+     * 容易出现「手动清理范围」与「自动淘汰范围」不一致的问题。
+     */
     fun clearCache() {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
-            }
+            NCMusicApp.instance.cacheManager.clearAll()
             refreshCacheSize()
         }
     }
-
-    private fun dirSize(dir: File?): Long {
-        if (dir == null || !dir.exists()) return 0L
-        return dir.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
-    }
-
     /**
      * 深色模式 / 自定义主题色 / 莫奈取色 —— 三者互斥：
      * - 开「深色模式」→ 要固定深色配色，关闭莫奈取色并清空自定义色
@@ -210,7 +221,18 @@ class SettingsViewModel : ViewModel() {
     fun setWifiQuality(v: String) { viewModelScope.launch { prefs.setWifiQuality(v) } }
     fun setMobileQuality(v: String) { viewModelScope.launch { prefs.setMobileQuality(v) } }
     fun setStartPage(v: String) { viewModelScope.launch { prefs.setStartPage(v) } }
-    fun setMaxCacheMb(v: Int) { viewModelScope.launch { prefs.setMaxCacheMb(v) } }
+    /**
+     * 设置最大缓存。
+     *
+     * 在**写入前统一钳制**到 [CACHE_MIN_MB]..[CACHE_MAX_MB]。
+     * 之所以在这一层做（而不是只靠界面约束）：滑块与精确输入是两条独立入口，
+     * 仅在界面侧限制必然出现不一致（如输入 999 GB 后滑块钳到 10 GB、
+     * 数字却显示 999 GB）。收口在 VM 后，无论从哪条路径进入结果都一致。
+     */
+    fun setMaxCacheMb(v: Int) {
+        val clamped = v.coerceIn(CACHE_MIN_MB, CACHE_MAX_MB)
+        viewModelScope.launch { prefs.setMaxCacheMb(clamped) }
+    }
 
     fun setTimerMinutes(v: Int) {
         viewModelScope.launch { prefs.setTimerMinutes(v) }
@@ -320,6 +342,12 @@ class SettingsViewModel : ViewModel() {
     }
     fun logout() { viewModelScope.launch { NCMusicApp.instance.musicRepository.logout() } }
 }
+
+/** 最大缓存下限（MB）：1 GB —— 与滑块左端、默认值一致 */
+const val CACHE_MIN_MB = 1024
+
+/** 最大缓存上限（MB）：10 GB —— 与滑块右端、精确输入上限一致 */
+const val CACHE_MAX_MB = 10240
 
 private val qualityOptions = listOf(
     "standard" to "标准（128k）",
@@ -458,7 +486,9 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = cacheInput,
                     onValueChange = { s -> cacheInput = s.filter { it.isDigit() }.take(3) },
-                    label = { Text("GB（1-999）") },
+                    // 上限与滑块一致（1–10 GB）——
+                    // 原先写 1-999，允许输入远超滑块上限的值，造成两处矛盾
+                    label = { Text("GB（1-${CACHE_MAX_MB / 1024}）") },
                     singleLine = true,
                 )
             },
@@ -967,9 +997,10 @@ fun SettingsScreen(
                 // 但取值 128/2048/5120/10240 并非等距（2GB 实际在 19% 位置，标签却画在 33%），
                 // 于是标签与滑块位置完全错位。改为等距取值后，标签与刻度严格对应。
                 RoundSlider(
-                    value = state.maxCacheMb.toFloat().coerceIn(1024f, 10240f),
+                    value = state.maxCacheMb.toFloat()
+                        .coerceIn(CACHE_MIN_MB.toFloat(), CACHE_MAX_MB.toFloat()),
                     onValueChange = { vm.setMaxCacheMb(it.toInt()) },
-                    valueRange = 1024f..10240f,
+                    valueRange = CACHE_MIN_MB.toFloat()..CACHE_MAX_MB.toFloat(),
                     steps = 8,                        // 1,2,…,10 GB 共 10 档
                     modifier = Modifier.padding(horizontal = 16.dp),
                 )

@@ -1,0 +1,50 @@
+# 统一换行符处理，保证跨平台构建可用。
+#
+# ## 为什么必须有这个文件
+#
+# Gradle Wrapper 由两个脚本组成，且它们的换行符要求**相反**：
+#
+# | 文件 | 运行环境 | 要求 |
+# |---|---|---|
+# | `gradlew`     | sh / bash（Linux、macOS、Git Bash） | **LF** |
+# | `gradlew.bat` | cmd.exe（Windows）                  | **CRLF** |
+#
+# 若不做约束，Git 的 `core.autocrlf` 会在检出时按平台改写：
+#  · Windows 上检出 → `gradlew` 被改成 CRLF →
+#    在 Linux/macOS/CI 上执行会报 `bad interpreter: /bin/sh^M`
+#  · 反向亦然 —— `gradlew.bat` 变成 LF 后，
+#    其内部的 `goto` 标签跳转在 cmd.exe 下会失效（批处理解析器依赖 CR）
+#
+# 这两类问题都不会在开发机上暴露，只会在**别人的环境或 CI** 上炸，
+# 因此必须用 `.gitattributes` 显式固定，而不能依赖各人的本地配置。
+
+# 默认：文本文件统一以 LF 存入仓库
+* text=auto eol=lf
+
+# Unix 外壳脚本：必须 LF
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows 批处理：必须 CRLF
+gradlew.bat text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件：禁止任何换行符转换（否则文件损坏）
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.apk   binary
+*.keystore binary
+*.jks   binary
+
+# 文本资源（LF 即可）
+*.kt    text eol=lf
+*.kts   text eol=lf
+*.xml   text eol=lf
+*.md    text eol=lf
+*.pro   text eol=lf

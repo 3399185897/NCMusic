@@ -1,9 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 的备份与迁移规则（dataExtractionRules）。
+
+  与 backup_rules.xml 同理，必须排除存放登录凭据的 DataStore 目录。
+  「云备份」与「设备间迁移」分开配置：本次对两者都做排除 ——
+  虽然换机迁移的场景下用户可能希望保留登录态，
+  但明文 Cookie 经由迁移通道传输同样存在暴露风险，且用户重新登录成本很低，
+  因此按「最小暴露面」原则一并排除。
+-->
 <data-extraction-rules>
     <cloud-backup>
+        <!-- 认证数据：Cookie、账号信息 -->
+        <exclude domain="file" path="datastore/" />
         <exclude domain="sharedpref" path="device_info.xml" />
     </cloud-backup>
     <device-transfer>
+        <exclude domain="file" path="datastore/" />
         <exclude domain="sharedpref" path="device_info.xml" />
     </device-transfer>
 </data-extraction-rules>

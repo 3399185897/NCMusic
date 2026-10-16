@@ -1,6 +1,6 @@
 package com.buddy.ncmusic.ui.components
 
-import android.provider.Settings
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -73,14 +73,10 @@ fun ExpressiveLoadingIndicator(
 ) {
     val context = LocalContext.current
 
-    // 无障碍：系统关闭动画时停掉旋转
-    val reduceMotion = remember {
-        Settings.Global.getFloat(
-            context.contentResolver,
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            1f,
-        ) == 0f
-    }
+    // 无障碍：系统关闭动画时停掉旋转。
+    // 改用共享工具，与全项目其余动画保持同一判定口径
+    // （原先只读 ANIMATOR_DURATION_SCALE，漏了 TRANSITION_ANIMATION_SCALE）。
+    val reduceMotion = rememberReduceMotion()
 
     // ---------- 官方形状序列 ----------
     val polygons = remember {

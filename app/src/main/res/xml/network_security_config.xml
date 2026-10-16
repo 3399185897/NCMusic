@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置。
+
+  ## 为什么不能直接关掉明文流量
+
+  应用自身的接口域名是 **HTTPS**（`DirectApi.BASE = "https://music.163.com"`），
+  但**服务端返回的音频地址与封面地址**（网易 CDN）实测存在 `http://` 形式，
+  例如 `http://m801.music.126.net/...`。
+
+  这类 URL 完全由服务端下发，客户端无法要求其改用 HTTPS。
+  因此若把明文流量一刀切禁掉，结果是**部分歌曲无法播放 / 封面无法加载** ——
+  这属于"盲目关闭"，不是安全加固。
+
+  ## 原配置的问题
+
+  `android:usesCleartextTraffic="true"` 是**全局开关**：
+  它允许应用与**任意域名**进行明文通信。而真正需要的只是网易自家的 CDN，
+  其余流量本应强制 HTTPS。攻击面因此被无必要地放大
+  （例如中间人可诱导请求 `http://` 的第三方地址而不会被系统拦截）。
+
+  ## 现在的策略
+
+  默认 **禁止明文**，仅对网易域名开放例外。
+  这样既保住播放与封面加载，又把明文限制在必要范围内。
+
+  > 注意：`minSdk = 24`，而 `networkSecurityConfig` 自 API 24 起支持，
+  > 故可安全依赖它；此时 `usesCleartextTraffic` 会被忽略，已在 Manifest 中移除。
+-->
+<network-security-config>
+    <!-- 默认：强制 HTTPS -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!--
+      例外：网易云相关域名允许明文。
+      · 126.net  —— 音频 CDN（m7/m8/m80x…）与封面 CDN（p1~p4）
+      · 163.com  —— music.163.com 接口与部分资源
+      · netease.com —— 其他网易云服务域名
+      includeSubdomains 覆盖全部子域，避免遗漏某个 CDN 节点导致无法播放。
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">126.net</domain>
+        <domain includeSubdomains="true">163.com</domain>
+        <domain includeSubdomains="true">netease.com</domain>
+    </domain-config>
+</network-security-config>

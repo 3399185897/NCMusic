@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.search
 
+import androidx.compose.foundation.layout.PaddingValues
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -80,8 +82,11 @@ fun SearchScreen(
                 color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(results) { song ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+            ) {
+                items(results, key = { it.id }) { song ->
                     SongListItem(
                         song = song,
                         onClick = { onPlay(results, results.indexOf(song)) },

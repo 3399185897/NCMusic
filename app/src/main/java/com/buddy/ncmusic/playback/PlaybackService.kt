@@ -65,7 +65,38 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    /**
+     * 决定是否把媒体会话交给一个控制端。
+     *
+     * ## 背景
+     *
+     * 本服务在 Manifest 中必须是 `exported="true"`（否则通知栏控件、
+     * 媒体恢复、Android Auto / 助手全部失效，详见 Manifest 注释）。
+     * 但"对外可见"不等于"对所有人开放" —— 原实现无条件返回会话，
+     * 意味着**任意第三方应用**只要绑定本服务即可读写播放状态、
+     * 甚至切歌。
+     *
+     * ## 策略：只放行可信控制端
+     *
+     * 1. **本应用自身** —— App 内界面通过 MediaController 连接
+     * 2. **system uid** —— SystemUI 的通知栏媒体控件、Android 11+ 的媒体恢复
+     * 3. **[MediaSession.ControllerInfo.isTrusted]** —— Media3 对
+     *    "持有 `MEDIA_CONTENT_CONTROL` 权限"的判定，覆盖
+     *    Android Auto / Wear OS / 语音助手等合法外部控制端
+     *
+     * 这三类之外一律拒绝。既不影响任何既有功能，
+     * 又避免了"任意应用都能控制播放器"的暴露面。
+     *
+     * > 注意：拒绝时返回 null，Media3 会直接断开该控制端的连接。
+     * > 这里刻意不写日志 —— 本项目全工程无日志输出（见安全约定），
+     * > 以免任何播放上下文经由日志外泄。
+     */
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        val trusted = controllerInfo.packageName == packageName ||
+            controllerInfo.uid == android.os.Process.SYSTEM_UID ||
+            controllerInfo.isTrusted
+        return if (trusted) mediaSession else null
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {

@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.artist
 
+import androidx.compose.foundation.layout.PaddingValues
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -74,7 +76,10 @@ fun ArtistScreen(
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.titleSmall,
             )
-            LazyColumn(Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+            ) {
                 itemsIndexed(songs) { index, song ->
                     SongListItem(song = song, onClick = { onPlay(songs, index) })
                 }

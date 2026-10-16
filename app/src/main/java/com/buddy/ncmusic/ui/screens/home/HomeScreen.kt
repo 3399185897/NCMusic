@@ -162,7 +162,7 @@ fun HomeScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
-                                items(playlists) { playlist ->
+                                items(playlists, key = { it.id }) { playlist ->
                                     PlaylistCard(
                                         playlist = playlist,
                                         onClick = { onOpenPlaylist(playlist.id) },
@@ -187,7 +187,7 @@ private fun SongPager(
     onOpenArtist: (Long) -> Unit,
 ) {
     LazyRow(contentPadding = PaddingValues(horizontal = 16.dp)) {
-        items(songs.chunked(4)) { page ->
+        items(songs.chunked(4), key = { it.firstOrNull()?.id ?: -1L }) { page ->
             Column(
                 modifier = Modifier
                     .width(pageWidth)
@@ -224,7 +224,7 @@ fun RankScreen(
             modifier = Modifier,
         )
         else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(toplist) { rank ->
+            items(toplist, key = { it.id }) { rank ->
                 RankItem(rank = rank, onClick = { onOpenPlaylist(rank.id) })
             }
         }

@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.local
 
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -286,7 +287,8 @@ private fun DownloadedList(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp),
+            // 原先写死 24dp，未让开悬浮岛与导航栏
+            contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
         ) {
             itemsIndexed(items) { index, item ->
                 Row(

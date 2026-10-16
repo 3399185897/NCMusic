@@ -70,12 +70,29 @@ class MainActivity : ComponentActivity() {
                 // 播放失败提示：PlaybackManager 通过 errorMessage 上报原因，
                 // 这里统一以 Toast 呈现 —— 播放可从任意页面触发，
                 // 用全局 Toast 比在各页面各接一个提示更省事，也不会漏。
-                val playback by PlaybackManager.state.collectAsState()
+                // ⚠️ 只订阅**错误信息**这一条细粒度流，而非完整 PlaybackState。
+                //
+                // 此处唯一用途是读取 errorMessage 弹 Toast。
+                // 若订阅完整 state，则播放进度（每秒数次）会让 MainActivity
+                // 的整个 setContent 组合域持续重组 —— 而它承载着
+                // Surface + NCMusicApp 这棵**全应用最大**的子树。
+                val playbackError by PlaybackManager.errorMessageFlow.collectAsState()
+                // 信息性提示（如音质降级）单独订阅 —— 与错误分开管理，
+                // 否则会被播放成功后的 errorMessage 清理逻辑一并抹掉
+                val playbackNotice by PlaybackManager.noticeMessageFlow.collectAsState()
                 val ctx = LocalContext.current
-                LaunchedEffect(playback.errorMessage) {
-                    playback.errorMessage?.let { msg ->
+
+                LaunchedEffect(playbackError) {
+                    playbackError?.let { msg ->
                         Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
                         PlaybackManager.clearError()      // 消费掉，避免重复弹
+                    }
+                }
+                LaunchedEffect(playbackNotice) {
+                    playbackNotice?.let { msg ->
+                        // 提示用短时长，与错误的"长时长"区分轻重
+                        Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                        PlaybackManager.clearNotice()
                     }
                 }
 
@@ -92,8 +109,17 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.surface,
                     contentColor = MaterialTheme.colorScheme.onSurface,
                 ) {
-                    ColorRevealOverlay()
+                    // ⚠️ 绘制顺序 = 叠放层级，后者在上。
+                    //
+                    // 原先 ColorRevealOverlay 放在 NCMusicApp **之前**，
+                    // 等于把扩散色块压在应用内容**之下** ——
+                    // 动画期间用户看到的是**旧界面**，扩散完全不可见
+                    // （只有内容带透明背景的少数页面能略微透出）。
+                    //
+                    // 这里**调换顺序**：内容先画，扩散遮罩后画叠在其上，
+                    // 才形成"新颜色从点击处漫开覆盖旧界面"的效果。
                     NCMusicApp()
+                    ColorRevealOverlay()
                 }
             }
         }

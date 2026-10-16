@@ -83,6 +83,12 @@ import com.buddy.ncmusic.ui.theme.AppShapes
  *
  * 方块直接呈现封面原色（**不叠加任何颜色遮罩**），以保证专辑图的本来色彩。
  *
+ * ## 歌单数量不足时
+ *
+ * 先前实现用 `index % size` 循环取用，导致**同一张封面重复出现多遍**。
+ * 现改为：仅前 N 个方块承载真实歌单，其余以中性占位块填充 ——
+ * 拼贴仍然铺满且无缝，但不会伪造出重复的歌单。
+ *
  * ## 响应式
  *
  * 通过 [BoxWithConstraints] 读取可用宽度，所有坐标与边长按同一系数
@@ -114,16 +120,40 @@ fun SquaredMosaic(
                 // 主题色底：图片加载完成前也保持整体观感一致
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest),
         ) {
+            // ⚠️ 不再用 `index % playlists.size` 循环取用。
+            //
+            // 那样在歌单不足 18 个时会让**同一张封面反复出现**
+            // （3 个歌单会各显示 6 次），观感上像是数据重复了。
+            //
+            // 改为：前 N 个方块用真实歌单，其余填充**占位方块**。
+            // 占位块保持与真实块一致的视觉规格（圆角由外层裁切、
+            // 底色用容器色），因此拼贴墙依然铺满、依然无缝，
+            // 但不会伪造出并不存在的歌单。
             SQUARED_LAYOUT.forEachIndexed { index, tile ->
-                // 歌单数不足时循环取用，保证拼贴墙始终铺满
-                val playlist = playlists[index % playlists.size]
-                SquaredTileView(
-                    playlist = playlist,
-                    size = (tile.size * scale).dp,
-                    offsetX = (tile.x * scale).dp,
-                    offsetY = (tile.y * scale).dp,
-                    onClick = { onOpenPlaylist(playlist.id) },
-                )
+                val playlist = playlists.getOrNull(index)
+                val tileModifier = Modifier
+                    .offset(
+                        x = (tile.x * scale).dp,
+                        y = (tile.y * scale).dp,
+                    )
+                    .size((tile.size * scale).dp)
+
+                if (playlist == null) {
+                    // 占位块：仅保留底色，不可点击
+                    Box(
+                        modifier = tileModifier.background(
+                            MaterialTheme.colorScheme.surfaceContainerHigh,
+                        ),
+                    )
+                } else {
+                    SquaredTileView(
+                        playlist = playlist,
+                        size = (tile.size * scale).dp,
+                        offsetX = (tile.x * scale).dp,
+                        offsetY = (tile.y * scale).dp,
+                        onClick = { onOpenPlaylist(playlist.id) },
+                    )
+                }
             }
         }
     }

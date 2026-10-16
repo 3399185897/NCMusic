@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.navigation
 
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
@@ -145,6 +146,9 @@ fun NCMusicApp() {
     }.collectAsState(initial = false)
     val showMiniPlayer = showBottomBar && hasSong
 
+    // 系统「减少动态效果」偏好：为 true 时所有转场退化为瞬时切换
+    val reduceMotion = rememberReduceMotion()
+
     // 播放器改为**同树覆盖层**（不再走 NavHost 路由）。
     //
     // 原因：NavHost 转场期间「新页面首次组合 + 旧页面仍在组合」双重开销，
@@ -217,10 +221,11 @@ fun NCMusicApp() {
                 bottom = innerPadding.calculateBottomPadding(),
             ),
             // 统一转场：350ms 固定节奏 + 视差 + 缩放（见 Transitions.kt）
-            enterTransition = { enterTransition() },
-            exitTransition = { exitTransition() },
-            popEnterTransition = { popEnterTransition() },
-            popExitTransition = { popExitTransition() },
+            // 转场传入减动效偏好：系统开启「移除动画」时退化为瞬时切换
+            enterTransition = { enterTransition(reduceMotion) },
+            exitTransition = { exitTransition(reduceMotion) },
+            popEnterTransition = { popEnterTransition(reduceMotion) },
+            popExitTransition = { popExitTransition(reduceMotion) },
         ) {
             composable(
                 route = Routes.HOME,

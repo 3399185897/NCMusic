@@ -36,7 +36,15 @@ data class UserState(
     /** 定时关闭（分钟，0 = 关闭） */
     val timerMinutes: Int = 0,
     /** 最大缓存（MB） */
-    val maxCacheMb: Int = 500,
+    /**
+     * 最大缓存（MB）。
+     *
+     * ⚠️ 默认值必须与设置页滑块的下限（1 GB = 1024 MB）保持一致。
+     * 原先默认 500 MB 落在滑块范围「1–10 GB」之外，导致：
+     *  · 滑块把初值 clamp 到下限，界面显示 1 GB 而实际存的是 500 MB
+     *  · 「精确输入」对话框按 GB 换算得 `500/1024 = 0`，输入框显示为**空**
+     */
+    val maxCacheMb: Int = 1024,
     /** 音量均衡（ReplayGain） */
     val volumeNormalize: Boolean = false,
     /** 音量均衡增益（毫贝，0~1200） */
@@ -140,7 +148,7 @@ class UserPreferences(private val context: Context) {
             mobileQuality = p[Keys.MOBILE_QUALITY] ?: "higher",
             startPage = p[Keys.START_PAGE] ?: "home",
             timerMinutes = p[Keys.TIMER_MINUTES] ?: 0,
-            maxCacheMb = p[Keys.MAX_CACHE_MB] ?: 500,
+            maxCacheMb = p[Keys.MAX_CACHE_MB] ?: 1024,
             volumeNormalize = p[Keys.VOLUME_NORMALIZE] ?: false,
             volumeGain = p[Keys.VOLUME_GAIN] ?: 300,
             decodeMode = p[Keys.DECODE_MODE] ?: "hard",

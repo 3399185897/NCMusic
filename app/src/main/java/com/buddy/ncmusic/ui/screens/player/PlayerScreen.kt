@@ -189,7 +189,38 @@ fun PlayerScreen(
     // 每帧都会重组这整个 500+ 行的播放页，必然掉帧。
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val heightPx = with(LocalDensity.current) { maxHeight.toPx() }
+
+        // ⚠️ maxWidth / maxHeight 是 BoxWithConstraints 的**作用域成员**，
+        // 在嵌套的 Column/Row lambda 里无法隐式访问（编译器报
+        // "cannot be called with an implicit receiver"）。
+        // 因此在作用域内**先取出为普通局部变量**，供下层直接使用。
+        val boxMaxWidth = maxWidth
+        val boxMaxHeight = maxHeight
+
+        // 封面尺寸：0.34 倍可用高度，限制在 120~260dp。
+        // 上限保证大屏上与原有视觉规格一致；下限保证极矮屏仍有可辨识的封面。
+        val coverSize = (boxMaxHeight * 0.34f).coerceIn(120.dp, 260.dp)
         val offsetY = remember { Animatable(0f) }
+
+        // ---------- 封面连续转场参数 ----------
+        //
+        // 目标：从迷你播放器点开时，全屏封面应**从悬浮岛封面的大小长出**，
+        // 而不是凭空出现在最终尺寸上 —— 后者会让展开显得"跳"。
+        //
+        // 做法：按展开进度对封面做**等比缩放 + 淡入**。
+        //  进度 0（完全收起）= 悬浮岛封面比例（40dp / coverSize）
+        //  进度 1（完全展开）= 1.0
+        //
+        // 之所以用 graphicsLayer 在**绘制阶段**读取进度：
+        // 缩放不参与布局（不影响占位），且每帧只重绘不重组 ——
+        // 这是低成本做法，不需要引入 SharedTransitionLayout 那套机制
+        // （后者要求两个界面同时存在于组合树中，与本项目的
+        //  "播放器为同树覆盖层"架构不匹配）。
+        val density = LocalDensity.current
+        val coverSizePx = with(density) { coverSize.toPx() }
+        val miniCoverPx = with(density) { 40.dp.toPx() }
+        val coverStartScale =
+            if (coverSizePx > 0f) (miniCoverPx / coverSizePx).coerceIn(0.1f, 1f) else 1f
         var offsetInitialized by remember { mutableStateOf(false) }
 
         LaunchedEffect(expanded, heightPx) {
@@ -293,16 +324,45 @@ fun PlayerScreen(
 
             // 内容区：居中排列，紧凑不留大空白
             Column(
-                modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 32.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    // 窄屏（含横屏）收敛横向内边距，避免内容被压缩变形
+                    .padding(horizontal = if (boxMaxWidth < 360.dp) 16.dp else 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
                 CoverImage(
                     url = song.coverUrl,
                     modifier = Modifier
-                        .size(260.dp)
+                        // ⚠️ 封面不再固定 260dp。
+                        //
+                        // 固定值在三种场景下必然出问题：
+                        //  · 矮屏（720×1280 老机型、分屏）—— 总高超屏，控件被挤压
+                        //  · 横屏 —— 高度骤减，260dp 几乎占满屏高
+                        //  · 大字体（无障碍 200%）—— 文字变高，纵向空间更紧张
+                        //
+                        // 现改为按**可用高度**自适应：常规竖屏约 250~270dp
+                        // （与原先 260dp 基本一致，观感不变），
+                        // 矮屏/横屏则相应收窄，为歌词与控制区让出空间。
+                        .size(coverSize)
                         .shadow(24.dp, AppShapes.of(24.dp))
                         .clip(AppShapes.of(24.dp))
+                        // 连续转场：随展开进度由小放大并淡入。
+                        // 在 graphicsLayer 的 lambda 内读取 offsetY，
+                        // 属绘制阶段取值，不触发组合期重组。
+                        .graphicsLayer {
+                            val progress = if (heightPx > 0f) {
+                                (1f - offsetY.value / heightPx).coerceIn(0f, 1f)
+                            } else {
+                                1f
+                            }
+                            val sc = coverStartScale +
+                                (1f - coverStartScale) * progress
+                            scaleX = sc
+                            scaleY = sc
+                            alpha = progress
+                        }
                         .clickable(onClick = onOpenLyric),
                     contentDescription = song.name,
                 )
@@ -310,7 +370,12 @@ fun PlayerScreen(
                 // 歌词区固定高度，避免切换音质时布局抖动
                 // 歌词区：当前行 + 翻译 / 下一行 + 翻译，四段完整显示不截断
                 Column(
-                    modifier = Modifier.height(124.dp).fillMaxWidth(),
+                    // 高度随屏高自适应：
+                    // 固定 124dp 在矮屏上会与控制区争抢空间，把播放按钮挤到边缘。
+                    // 下限 96dp 保证大字体下四行歌词仍能显示，上限 124dp 与原值一致。
+                    modifier = Modifier
+                        .height((boxMaxHeight * 0.16f).coerceIn(96.dp, 124.dp))
+                        .fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     if (currentLine.isNotEmpty()) {
@@ -604,6 +669,12 @@ private fun playModeLabel(mode: PlayMode): String = when (mode) {
     PlayMode.SHUFFLE -> "随机播放"
 }
 
+/**
+ * 可选的在线音质档位。
+ *
+ * 注意 "local" 不在此列 —— 本地文件没有档位概念，
+ * 它的显示值由扩展名推断，且不允许切换（菜单对本地曲目禁用）。
+ */
 private val qualityOptions = listOf(
     "standard" to "标准",
     "higher" to "较高",
@@ -613,5 +684,9 @@ private val qualityOptions = listOf(
     "jymaster" to "超清母带",
 )
 
-private fun qualityLabel(q: String): String =
-    qualityOptions.firstOrNull { it.first == q }?.second ?: "标准"
+private fun qualityLabel(q: String): String = when (q) {
+    // 本地文件由扩展名承担显示，这里只作兜底
+    "local" -> "本地"
+    // 未知档位不再一律显示「标准」—— 那会把"服务端给了意料外的值"掩盖成正常状态
+    else -> qualityOptions.firstOrNull { it.first == q }?.second ?: q
+}

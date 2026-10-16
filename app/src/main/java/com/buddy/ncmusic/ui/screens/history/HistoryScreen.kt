@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.history
 
+import androidx.compose.foundation.layout.PaddingValues
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.foundation.lazy.rememberLazyListState
 import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
 import androidx.compose.foundation.layout.Column
@@ -94,8 +96,10 @@ fun HistoryScreen(
         } else {
             ListWithScrollIndicator(listState = listState, showIndicator = false) {
                 LazyColumn(
-                state = listState,
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
+                    // 底部安全区：避免最后一项被悬浮岛 + 导航栏遮挡
+                    contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
                 ) {
                 itemsIndexed(songs) { index, song ->
                     SongListItem(song = song, onClick = { onPlay(songs, index) }, onArtistClick = onOpenArtist)

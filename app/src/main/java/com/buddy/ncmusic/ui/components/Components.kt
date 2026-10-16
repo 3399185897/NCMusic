@@ -117,8 +117,28 @@ fun CoverImage(url: String?, modifier: Modifier = Modifier, contentDescription: 
  */
 @Composable
 fun rememberBottomSafeSpace(): androidx.compose.ui.unit.Dp {
-    val state by com.buddy.ncmusic.playback.PlaybackManager.state.collectAsState()
-    return if (state.song != null) 92.dp else 14.dp
+    // ⚠️ 只订阅 `hasSongFlow` 而非完整 state。
+    //
+    // 该函数在各列表页被用作 contentPadding，若订阅完整 PlaybackState，
+    // **播放进度每动一次都会让整个列表页重组** ——
+    // 而它实际只关心「有没有当前歌曲」这一个布尔量。
+    val hasSong by com.buddy.ncmusic.playback.PlaybackManager.hasSongFlow.collectAsState()
+
+    // ⚠️ 这里只需为**悬浮岛**留位，不需要叠加底部导航栏高度。
+    //
+    // 原因：`NavHost` 已经通过
+    //   `modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())`
+    // 为导航栏预留了空间（Scaffold 的 innerPadding 已含其高度）。
+    // 若此处再加一次导航栏高度，就是**重复计算** ——
+    // 内容底部会空出约 80dp 的无效留白，列表滚到底时明显"离底太远"。
+    //
+    // 悬浮岛的真实高度构成（见 MiniPlayer）：
+    //   外层上下 padding 4×2 + 内层 7×2 + 内容 50 = 72dp
+    // 再加 12dp 视觉呼吸 = 84dp。
+    //
+    // 无歌曲时没有悬浮岛，导航栏也已由 NavHost 处理，
+    // 只需保留很小的收尾间距。
+    return if (hasSong) 84.dp else 8.dp
 }
 
 /** 带按压缩放动效的 IconButton（全局统一交互） */
@@ -160,9 +180,17 @@ fun SongListItem(
     var showDetail by remember { mutableStateOf(false) }
     if (showDetail) SongDetailDialog(song = song, onDismiss = { showDetail = false })
 
-    val playback by PlaybackManager.state.collectAsState()
+    // ⚠️ 拆成两条细粒度流，而不是订阅完整 state。
+    //
+    // SongItem 会在**长列表里被实例化几十上百次**，
+    // 若每个实例都订阅含 `position` 的完整状态，
+    // 播放中就等于每秒把整个列表重组数遍 —— 这是列表页最贵的一处开销。
+    //
+    // 它实际只依赖两个低频值：当前歌曲 id 与是否正在播放。
+    val currentSongId by PlaybackManager.currentSongIdFlow.collectAsState()
+    val playing by PlaybackManager.isPlayingFlow.collectAsState()
     // 仅在「当前歌曲且正在播放」时显示跳动动效
-    val isCurrent = playback.song?.id == song.id && playback.isPlaying
+    val isCurrent = currentSongId == song.id && playing
 
     Row(
         modifier = modifier
@@ -502,8 +530,12 @@ fun MiniPlayer(
     modifier: Modifier = Modifier,
     visible: Boolean = true,
 ) {
-    val state by PlaybackManager.state.collectAsState()
-    val song = state.song ?: return
+    // 歌曲对象用细粒度流：它只在切歌时变化，与播放进度无关
+    val song = PlaybackManager.currentSongFlow.collectAsState().value ?: return
+    // 播放 / 加载这类低频开关同样用细粒度流，
+    // 避免因订阅完整 state 而跟着 position 一起重组
+    val playing by PlaybackManager.isPlayingFlow.collectAsState()
+    val loading by PlaybackManager.isLoadingFlow.collectAsState()
     var dragAccum by remember { mutableFloatStateOf(0f) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
 
@@ -520,11 +552,19 @@ fun MiniPlayer(
         .compositeOver(MaterialTheme.colorScheme.surface)
     val onContainer = MaterialTheme.colorScheme.onSurface
 
-    // 播放进度：供环绕封面的圆环使用
-    val progress = if (state.duration > 0) {
-        (state.position.toFloat() / state.duration).coerceIn(0f, 1f)
-    } else {
-        0f
+    // 播放进度：供环绕封面的圆环使用。
+    //
+    // ⚠️ 这里**不在组合作用域解包** position ——
+    // 那是每秒数次的组合期重组。改为在绘制 lambda 内读取
+    // `PlaybackManager.state.value`，重组被替换为**仅重绘**，
+    // 成本低一个数量级（与下面显隐动画的处理思路一致）。
+    val progressProvider: () -> Float = {
+        val snap = PlaybackManager.state.value
+        if (snap.duration > 0) {
+            (snap.position.toFloat() / snap.duration).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
     }
 
     // 显隐动画：不可见时淡出并微微下移（呼应它悬浮在底部的位置）
@@ -600,7 +640,9 @@ fun MiniPlayer(
                         contentDescription = song.name,
                     )
                     CircularProgressIndicator(
-                        progress = { progress },
+                        // 直接传入"读快照"的 lambda：
+                        // 进度在**绘制阶段**求值，不触发组合期重组
+                        progress = progressProvider,
                         modifier = Modifier.size(50.dp),
                         strokeWidth = 2.5.dp,
                         color = accent,
@@ -646,7 +688,7 @@ fun MiniPlayer(
                         contentColor = Color.White,
                     ),
                 ) {
-                    if (state.isLoading) {
+                    if (loading) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(22.dp),
                             color = Color.White,
@@ -654,9 +696,9 @@ fun MiniPlayer(
                         )
                     } else {
                         Icon(
-                            imageVector = if (state.isPlaying) Icons.Default.Pause
+                            imageVector = if (playing) Icons.Default.Pause
                             else Icons.Default.PlayArrow,
-                            contentDescription = if (state.isPlaying) "暂停" else "播放",
+                            contentDescription = if (playing) "暂停" else "播放",
                             modifier = Modifier.size(24.dp),
                         )
                     }

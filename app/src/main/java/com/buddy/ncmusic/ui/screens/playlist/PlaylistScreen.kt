@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.ui.screens.playlist
 
+import androidx.compose.foundation.layout.PaddingValues
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
@@ -69,8 +71,14 @@ fun PlaylistScreen(
      * 只要当前播放歌曲存在于本歌单中即认为是。
      * （无需比较完整队列，语义上更宽松也更实用）
      */
-    val playState by com.buddy.ncmusic.playback.PlaybackManager.state.collectAsState()
-    val currentSongId = playState.song?.id
+    // ⚠️ 本页只用到"当前歌曲 id"这一个字段，因此订阅细粒度流。
+    //
+    // 原先订阅完整 PlaybackState，而该对象含 position（每秒数次变化），
+    // 导致**播放过程中整个歌单页持续重组**（含 LazyColumn 全部可见项）。
+    val currentSongId by com.buddy.ncmusic.playback.PlaybackManager
+        .currentSongIdFlow.collectAsState()
+    // currentSongId 已由上方细粒度流提供；-1 表示当前无播放歌曲
+    val playingSongId: Long? = currentSongId.takeIf { it > 0 }
     val playlist by vm.playlist.collectAsState()
     val songs by vm.songs.collectAsState()
     val loading by vm.loading.collectAsState()
@@ -135,18 +143,19 @@ fun PlaylistScreen(
                 }
                 ListWithScrollIndicator(listState = listState) {
                     LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                ) {
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+                    ) {
                     item {
                         PlaylistHeader(
                             playlist = playlist,
                             onLocateCurrent = if (
-                                currentSongId != null &&
-                                songs.any { it.id == currentSongId }
+                                playingSongId != null &&
+                                songs.any { it.id == playingSongId }
                             ) {
                                 {
-                                    val idx = songs.indexOfFirst { it.id == currentSongId }
+                                    val idx = songs.indexOfFirst { it.id == playingSongId }
                                     if (idx >= 0) {
                                         scope.launch {
                                             // +1：列表第 0 项是头部
@@ -190,7 +199,7 @@ fun PlaylistScreen(
                             )
                         }
                     }
-                    items(filtered) { song ->
+                    items(filtered, key = { it.id }) { song ->
                         SongListItem(
                             song = song,
                             onClick = { onPlay(filtered, filtered.indexOf(song)) },

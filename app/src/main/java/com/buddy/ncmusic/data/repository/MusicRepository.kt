@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.data.repository
 
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -24,9 +26,67 @@ class MusicRepository(private val prefs: UserPreferences) {
 
     private val api = DirectApi()
 
-    /** 启动时恢复登录 Cookie */
+    /**
+     * Cookie 是否已恢复到 [DirectApi]。
+     *
+     * ## 为什么需要这个标记（修复"更新后每日推荐消失"）
+     *
+     * 启动时序原本是：
+     * ```
+     * NCMusicApp.onCreate  → appScope.launch { restoreCookie(...) }   // 异步
+     * HomeViewModel.init   → load() → recommendSongs()                // 立刻发起
+     * ```
+     * 两者**并发**。若 `recommendSongs()` 抢在 `restoreCookie` 之前发出，
+     * 请求就**不带 Cookie** → 服务端按未登录处理 → 每日推荐返回空。
+     *
+     * 更麻烦的是它**不会自愈**：`HomeViewModel` 里的
+     * `collectLatest { if (state.isLoggedIn) loadDaily() }`
+     * 只在 `isLoggedIn` **发生变化**时才触发，而初始值本就是 true ——
+     * 所以这次失败后再没有任何时机重试，用户只能重新登录
+     * （重新登录会写 Cookie，从而触发一次重载）。
+     *
+     * 升级后首次启动尤其明显：DataStore 需要从磁盘读取，
+     * 恢复耗时更长，竞态窗口更大。
+     */
+    @Volatile
+    private var cookieRestored = false
+
+    /** 保护首次恢复，避免多个并发请求同时读写 Cookie */
+    private val cookieMutex = Mutex()
+
+    /**
+     * 启动时恢复登录 Cookie（显式路径）。
+     *
+     * 与 [ensureCookieRestored] 配合：这里直接从内存传值，
+     * 无需再读 DataStore，但同样要置位就绪标记。
+     */
     fun restoreCookie(cookie: String?) {
         api.cookie = cookie?.takeIf { it.isNotBlank() }
+        cookieRestored = true
+    }
+
+    /**
+     * 确保 Cookie 已恢复（**惰性、幂等、并发安全**）。
+     *
+     * 需登录的接口在发起请求前调用它。若 [restoreCookie] 尚未跑完，
+     * 这里会**直接读一次 DataStore** 补上，从而彻底消除启动时序依赖 ——
+     * 请求不再依赖"启动流程是否及时完成"，而是"自己需要时就取"。
+     *
+     * 之所以不改成阻塞式启动：在 `Application.onCreate` 里同步读 DataStore
+     * 会拖慢冷启动，且 DataStore 本身不提供阻塞 API。惰性按需恢复
+     * 既不影响启动速度，又能保证正确性。
+     */
+    private suspend fun ensureCookieRestored() {
+        if (cookieRestored) return
+        cookieMutex.withLock {
+            // 双重检查：可能在等锁期间已被其它协程完成
+            if (cookieRestored) return
+            runCatching {
+                val cookie = prefs.userStateFlow.first().cookie
+                api.cookie = cookie.takeIf { it.isNotBlank() }
+            }
+            cookieRestored = true
+        }
     }
 
     // ---------------- 登录 ----------------
@@ -180,6 +240,8 @@ class MusicRepository(private val prefs: UserPreferences) {
     }
 
     suspend fun recommendSongs(): ApiResult<List<Song>> = safeApiCall {
+        // 需登录：先确保 Cookie 就绪，避免启动竞态导致返回空列表
+        ensureCookieRestored()
         api.recommendSongs()
     }
 
@@ -195,6 +257,7 @@ class MusicRepository(private val prefs: UserPreferences) {
      * 取 20 可确保 18 个方块各用一张不同封面。
      */
     suspend fun radarPlaylists(limit: Int = 20): ApiResult<List<Playlist>> = safeApiCall {
+        ensureCookieRestored()
         api.radarPlaylists(limit)
     }
 
@@ -220,6 +283,7 @@ class MusicRepository(private val prefs: UserPreferences) {
     // ---------------- 歌单 ----------------
 
     suspend fun userPlaylists(uid: Long): ApiResult<List<Playlist>> = safeApiCall {
+        ensureCookieRestored()
         api.userPlaylists(uid)
     }
 
@@ -261,17 +325,30 @@ class MusicRepository(private val prefs: UserPreferences) {
             )
 
         val ctx = NCMusicApp.instance
-        val safeName = song.name.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        // 文件名 = 歌名 + 歌手。
+        //
+        // 只用歌名会产生**跨歌手同名覆盖**：例如多首《偏偏喜欢你》
+        // 会被写成同一个文件，后下载的悄悄替掉先前的。
+        // 歌手缺省时退回歌名，避免生成 "歌名 - .flac" 这种畸形文件名。
+        val safeName = buildDownloadBaseName(song)
         val ext = api.encodeTypeOf(quality)
         val fileName = "$safeName.$ext"
         val mime = if (ext == "flac") "audio/flac" else "audio/mpeg"
+
+        // 本地临时文件的基础名：**带歌曲 ID**。
+        //
+        // 为什么必须带 ID：临时文件落在 `cacheDir` 这一**全局共享**目录里，
+        // 若只用文件名，两首同名歌曲并发下载会互相覆盖对方的临时数据，
+        // 结果是两个文件都损坏（或其中一个拿到对方的音频）。
+        // ID 让每个下载任务拥有独立的工作区。
+        val tmpBase = "dl_${song.id}_${System.nanoTime()}_$safeName"
 
         // 用户设置的下载目录（空串 = 未设置，用 App 专属目录）
         val customUri = ctx.userPreferences.userStateFlow.first().cacheDirUri
 
         // ---- 1) 用户自定义目录（SAF）优先 ----
         val savedToCustom = customUri.isNotBlank() &&
-            saveToSafDir(ctx, android.net.Uri.parse(customUri), fileName, mime, url)
+            saveToSafDir(ctx, android.net.Uri.parse(customUri), fileName, mime, url, tmpBase)
 
         // ---- 2) 回退：App 专属外部目录 ----
         // 自定义目录写入失败时不直接报错，避免「目录设错了就完全下不了」
@@ -279,11 +356,32 @@ class MusicRepository(private val prefs: UserPreferences) {
             val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
                 ?: ctx.filesDir
             dir.mkdirs()
-            val file = java.io.File(dir, fileName)
-            if (!api.downloadToFile(url, file)) throw ApiException(-1, "下载失败")
+            val target = java.io.File(dir, fileName)
+
+            // 先下载到**唯一命名的临时文件**，成功后再原子替换目标文件。
+            //
+            // 原先直接 `downloadToFile(url, target)` —— 中途失败会把已经存在的
+            // 完整文件截断成半截，用户既丢了旧文件又没拿到新文件。
+            val tmp = java.io.File(ctx.cacheDir, "$tmpBase.$ext")
+            try {
+                if (!api.downloadToFile(url, tmp)) {
+                    throw ApiException(-1, "下载失败（网络中断或数据不完整）")
+                }
+                replaceFileAtomically(tmp, target)
+            } finally {
+                // 无论成功失败都清理临时文件，避免 cacheDir 堆积
+                if (tmp.exists()) tmp.delete()
+            }
         }
 
         // ---- 3) 顺带保存封面与歌词（失败不影响音频本身）----
+        // 下载完成后按用户设置的「最大缓存大小」回收缓存。
+        //
+        // 这一步让该设置**真正生效** —— 此前它只被读取显示，
+        // 从未参与任何淘汰逻辑，属于无效设置。
+        // 剔除保护：刚写入的临时文件不能在本轮被删掉。
+        runCatching { NCMusicApp.instance.cacheManager.enforceLimit() }
+
         val extras = downloadArtifacts(ctx, song, safeName, customUri)
 
         val where = if (savedToCustom) "已保存到所选目录" else "已保存到应用目录"
@@ -299,23 +397,132 @@ class MusicRepository(private val prefs: UserPreferences) {
      *
      * @return true 表示成功写入目标目录
      */
+    /**
+     * 把下载内容写入用户通过 SAF 选定的目录。
+     *
+     * ## 写入策略（三步，任一步失败都不破坏原文件）
+     *
+     * 1. 音频先完整落到 cacheDir 的**唯一命名**临时文件（在 [downloadSong] 中完成）
+     * 2. 复制到目标目录下一个**唯一命名的临时文档**（`.ncmusic_tmp_*`）
+     * 3. 内容就绪后，**先尝试 `renameDocument` 就位**；
+     *    仅当就位成功，才去清理同名旧文件
+     *
+     * ## 为什么顺序是"先就位、后删旧"
+     *
+     * 上一版写的是「先删同名旧文件 → 再 renameDocument」。
+     * 若 rename 失败，就会走进回退分支；而回退分支也失败时，
+     * **旧文件已经删除、新文件又没建起来** —— 用户数据直接丢失（问题 6）。
+     *
+     * 现在改为：就位失败时**先不动旧文件**，只在回退复制成功后才清理。
+     * 两条路都失败时，旧文件仍在原位，用户至少还有原来的完整文件。
+     *
+     * @param tmpBase cacheDir 中临时文件的基础名（含歌曲 ID，保证唯一）
+     */
     private suspend fun saveToSafDir(
         ctx: android.content.Context,
         treeUri: android.net.Uri,
         fileName: String,
         mime: String,
         url: String,
+        tmpBase: String,
     ): Boolean = withContext(Dispatchers.IO) {
+        val tmp = java.io.File(ctx.cacheDir, "$tmpBase.tmp")
+        try {
+            runCatching {
+                if (!api.downloadToFile(url, tmp)) return@runCatching false
+
+                val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                val parent = android.provider.DocumentsContract
+                    .buildDocumentUriUsingTree(treeUri, docId)
+
+                // ---- 2) 复制到一个唯一命名的临时文档 ----
+                val stagingName = ".ncmusic_tmp_${System.currentTimeMillis()}_$fileName"
+                val staging = android.provider.DocumentsContract
+                    .createDocument(ctx.contentResolver, parent, mime, stagingName)
+                    ?: return@runCatching false
+
+                val written = runCatching {
+                    ctx.contentResolver.openOutputStream(staging)?.use { out ->
+                        tmp.inputStream().use { it.copyTo(out) }
+                    } != null
+                }.getOrDefault(false)
+
+                if (!written) {
+                    // 写入失败：清掉临时文档，**原文件保持原样**
+                    deleteDocumentQuietly(ctx, staging)
+                    return@runCatching false
+                }
+
+                // ---- 3) 先尝试改名就位 ----
+                val renamed = runCatching {
+                    android.provider.DocumentsContract
+                        .renameDocument(ctx.contentResolver, staging, fileName) != null
+                }.getOrDefault(false)
+
+                if (renamed) {
+                    // 就位成功后才删旧：此时新文件已存在，删除是安全的收尾动作
+                    deleteSameNameDocuments(ctx, treeUri, docId, fileName, keepStaging = null)
+                    return@runCatching true
+                }
+
+                // ---- 回退：复制到最终名 ----
+                // 注意此处**仍未删除旧文件** —— 只有复制成功才会去清理它。
+                val target = android.provider.DocumentsContract
+                    .createDocument(ctx.contentResolver, parent, mime, fileName)
+                if (target == null) {
+                    deleteDocumentQuietly(ctx, staging)
+                    return@runCatching false
+                }
+
+                val copied = runCatching {
+                    ctx.contentResolver.openOutputStream(target)?.use { out ->
+                        ctx.contentResolver.openInputStream(staging)?.use { it.copyTo(out) }
+                    } != null
+                }.getOrDefault(false)
+
+                deleteDocumentQuietly(ctx, staging)
+
+                if (!copied) {
+                    // 回退也失败：删除刚建出的半截目标（若有），旧文件依然完好
+                    deleteDocumentQuietly(ctx, target)
+                    return@runCatching false
+                }
+
+                // 复制成功，清理同名旧文件（此时 target 已是完整内容）
+                deleteSameNameDocuments(ctx, treeUri, docId, fileName, keepStaging = target)
+                true
+            }.getOrDefault(false)
+        } finally {
+            if (tmp.exists()) tmp.delete()
+        }
+    }
+
+    /** 删除一个文档，忽略失败（清理动作不应影响主流程结果） */
+    private fun deleteDocumentQuietly(ctx: android.content.Context, uri: android.net.Uri) {
         runCatching {
-            val tmp = java.io.File(ctx.cacheDir, fileName)
-            if (!api.downloadToFile(url, tmp)) return@runCatching false
+            android.provider.DocumentsContract.deleteDocument(ctx.contentResolver, uri)
+        }
+    }
 
-            val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
-            val parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-
-            // 若同名文件已存在，先删除再新建，避免生成 "name (1).flac"
-            val children = android.provider.DocumentsContract
-                .buildChildDocumentsUriUsingTree(treeUri, docId)
+    /**
+     * 删除目标目录下所有 [fileName] 同名文档。
+     *
+     * @param keepStaging 本次刚写入的文档，**跳过不删** ——
+     *   否则可能把自己刚写好的文件删掉（注意需比较 documentId）
+     */
+    private fun deleteSameNameDocuments(
+        ctx: android.content.Context,
+        treeUri: android.net.Uri,
+        docId: String,
+        fileName: String,
+        keepStaging: android.net.Uri?,
+    ) {
+        val keepId = keepStaging?.let {
+            runCatching { android.provider.DocumentsContract.getDocumentId(it) }.getOrNull()
+        }
+        val children = android.provider.DocumentsContract
+            .buildChildDocumentsUriUsingTree(treeUri, docId)
+        runCatching {
             ctx.contentResolver.query(
                 children,
                 arrayOf(
@@ -325,29 +532,81 @@ class MusicRepository(private val prefs: UserPreferences) {
                 null, null, null,
             )?.use { c ->
                 while (c.moveToNext()) {
-                    if (c.getString(1) == fileName) {
+                    val id = c.getString(0)
+                    if (c.getString(1) == fileName && id != keepId) {
                         runCatching {
                             android.provider.DocumentsContract.deleteDocument(
                                 ctx.contentResolver,
                                 android.provider.DocumentsContract
-                                    .buildDocumentUriUsingTree(treeUri, c.getString(0)),
+                                    .buildDocumentUriUsingTree(treeUri, id),
                             )
                         }
                     }
                 }
             }
+        }
+    }
 
-            val target = android.provider.DocumentsContract
-                .createDocument(ctx.contentResolver, parent, mime, fileName)
-                ?: return@runCatching false
+    /**
+     * 用 [src] 的内容**原子地**替换 [dst]。
+     *
+     * 做法：先把 src 改名为 dst 临时兄弟名，再删旧 dst，最后改名就位。
+     * 之所以不是「先删 dst → 再改名」：那样在两步之间失败就两头落空。
+     *
+     * 若同目录改名不被支持（跨设备等），退回 `copyTo` 覆盖 ——
+     * 此时才可能出现短暂不完整窗口，但源数据仍在，可重试。
+     *
+     * @return true 表示目标文件已是新内容
+     */
+    private fun replaceFileAtomically(src: java.io.File, dst: java.io.File): Boolean {
+        dst.parentFile?.mkdirs()
 
-            ctx.contentResolver.openOutputStream(target)?.use { out ->
-                tmp.inputStream().use { it.copyTo(out) }
-            } ?: return@runCatching false
+        // 首选：同目录内改名（POSIX 下原子）
+        val staged = java.io.File(dst.parentFile, ".ncmusic_stage_${System.nanoTime()}_${dst.name}")
+        if (runCatching { src.renameTo(staged) }.getOrDefault(false)) {
+            // 旧文件先备份名，改名成功后删除；失败则回滚
+            val backup = java.io.File(dst.parentFile, ".ncmusic_old_${System.nanoTime()}_${dst.name}")
+            val hadOld = dst.exists() && runCatching { dst.renameTo(backup) }.getOrDefault(false)
 
-            tmp.delete()
+            val ok = runCatching { staged.renameTo(dst) }.getOrDefault(false)
+            if (ok) {
+                if (hadOld) backup.delete()
+                return true
+            }
+            // 就位失败：把旧文件挪回来，保证用户原有文件不丢
+            if (hadOld) runCatching { backup.renameTo(dst) }
+            staged.delete()
+            return false
+        }
+
+        // 回退：直接复制覆盖（源仍保留，可重试）
+        return runCatching {
+            src.inputStream().use { input ->
+                dst.outputStream().use { out -> input.copyTo(out) }
+            }
             true
         }.getOrDefault(false)
+    }
+
+    /**
+     * 生成下载文件的基础名（不含扩展名）。
+     *
+     * 规则：`歌名 - 歌手`，并对文件系统非法字符做替换。
+     * 歌手为空时不追加分隔符，防止出现 `歌名 - ` 这样的尾随符号。
+     *
+     * 之所以把歌手拼进来：仅用歌名会让**不同歌手的同名曲目互相覆盖**，
+     * 用户下载后只得到一个文件，另一个悄悄丢失。
+     */
+    private fun buildDownloadBaseName(song: Song): String {
+        fun sanitize(raw: String): String =
+            raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+
+        val title = sanitize(song.name).ifBlank { "未命名" }
+        val artist = sanitize(song.artistNames)
+        val base = if (artist.isBlank()) title else "$title - $artist"
+
+        // 过长的文件名在部分文件系统上会保存失败，按 120 字截断
+        return if (base.length > 120) base.take(120) else base
     }
 
     /**
@@ -428,42 +687,65 @@ class MusicRepository(private val prefs: UserPreferences) {
                 val parent = android.provider.DocumentsContract
                     .buildDocumentUriUsingTree(treeUri, docId)
 
-                // 同名先删，避免系统改名为 "name (1).lrc"
-                val children = android.provider.DocumentsContract
-                    .buildChildDocumentsUriUsingTree(treeUri, docId)
-                ctx.contentResolver.query(
-                    children,
-                    arrayOf(
-                        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    ),
-                    null, null, null,
-                )?.use { c ->
-                    while (c.moveToNext()) {
-                        if (c.getString(1) == name) {
-                            runCatching {
-                                android.provider.DocumentsContract.deleteDocument(
-                                    ctx.contentResolver,
-                                    android.provider.DocumentsContract
-                                        .buildDocumentUriUsingTree(treeUri, c.getString(0)),
-                                )
-                            }
-                        }
-                    }
+                // 与音频走同一套策略：先写唯一临时名，写完再替换同名旧文件。
+                // 好处是「同名先删」那一步挪到了内容就绪之后，
+                // 中途失败不会把已有的歌词 / 封面删掉。
+                val stagingName = ".ncmusic_tmp_${System.currentTimeMillis()}_$name"
+                val staging = android.provider.DocumentsContract
+                    .createDocument(ctx.contentResolver, parent, mime, stagingName)
+                    ?: return@runCatching false
+
+                val written = runCatching {
+                    ctx.contentResolver.openOutputStream(staging)?.use { it.write(bytes) } != null
+                }.getOrDefault(false)
+
+                if (!written) {
+                    deleteDocumentQuietly(ctx, staging)
+                    return@runCatching false
                 }
 
+                // 与音频同策略：**先就位、后删旧**。
+                // 若顺序反过来，一旦就位失败就会两头落空（旧文件已删、新文件没有）。
+                val renamed = runCatching {
+                    android.provider.DocumentsContract
+                        .renameDocument(ctx.contentResolver, staging, name) != null
+                }.getOrDefault(false)
+
+                if (renamed) {
+                    deleteSameNameDocuments(ctx, treeUri, docId, name, keepStaging = null)
+                    return@runCatching true
+                }
+
+                // 改名不受支持：复制到最终名，成功后才清理旧文件
                 val target = android.provider.DocumentsContract
                     .createDocument(ctx.contentResolver, parent, mime, name)
-                    ?: return@runCatching false
-                ctx.contentResolver.openOutputStream(target)?.use { it.write(bytes) }
-                    ?: return@runCatching false
+                if (target == null) {
+                    deleteDocumentQuietly(ctx, staging)
+                    return@runCatching false
+                }
+                val copied = runCatching {
+                    ctx.contentResolver.openOutputStream(target)?.use { it.write(bytes) } != null
+                }.getOrDefault(false)
+                deleteDocumentQuietly(ctx, staging)
+                if (!copied) {
+                    deleteDocumentQuietly(ctx, target)
+                    return@runCatching false
+                }
+                deleteSameNameDocuments(ctx, treeUri, docId, name, keepStaging = target)
                 true
             } else {
                 val dir = ctx.getExternalFilesDir(android.os.Environment.DIRECTORY_MUSIC)
                     ?: ctx.filesDir
                 dir.mkdirs()
-                java.io.File(dir, name).writeBytes(bytes)
-                true
+                // 先写唯一临时文件，再用原子替换就位 ——
+                // 直接 writeBytes 到目标会在中途失败时截断已有文件
+                val tmp = java.io.File(ctx.cacheDir, "art_${System.nanoTime()}_$name")
+                try {
+                    tmp.writeBytes(bytes)
+                    replaceFileAtomically(tmp, java.io.File(dir, name))
+                } finally {
+                    if (tmp.exists()) tmp.delete()
+                }
             }
         }.getOrDefault(false)
     }
@@ -478,7 +760,14 @@ class MusicRepository(private val prefs: UserPreferences) {
 
     // ---------------- 歌曲 / 歌词 ----------------
 
-    suspend fun songUrl(id: Long, level: String): ApiResult<String> = safeApiCall {
+    /**
+     * 解析播放地址。
+     *
+     * 返回 [DirectApi.ResolvedUrl] 而非裸字符串 —— 其中携带
+     * **服务端实际给出的音质档位**（可能因权限/版权低于请求值），
+     * 供播放器展示**真实**音质，而不是照搬用户设置。
+     */
+    suspend fun songUrl(id: Long, level: String): ApiResult<DirectApi.ResolvedUrl> = safeApiCall {
         api.songUrl(id, level) ?: throw ApiException(-1, "该歌曲暂无可用播放源")
     }
 
@@ -489,10 +778,12 @@ class MusicRepository(private val prefs: UserPreferences) {
     // ---------------- 喜欢 / 歌单 / 历史 ----------------
 
     suspend fun likeSong(id: Long, like: Boolean): ApiResult<Boolean> = safeApiCall {
+        ensureCookieRestored()
         api.likeSong(id, like)
     }
 
     suspend fun likelist(uid: Long): ApiResult<List<Long>> = safeApiCall {
+        ensureCookieRestored()
         api.likelist(uid)
     }
 
@@ -501,6 +792,7 @@ class MusicRepository(private val prefs: UserPreferences) {
     }
 
     suspend fun playHistory(uid: Long): ApiResult<List<Song>> = safeApiCall {
+        ensureCookieRestored()
         api.playHistory(uid)
     }
 
@@ -510,9 +802,50 @@ class MusicRepository(private val prefs: UserPreferences) {
 
     // ---------------- 通用 ----------------
 
+    /**
+     * 统一的结果封装入口。
+     *
+     * ## 为什么要分类而不是只取 message
+     *
+     * 原先的实现把所有异常一律压成 `ApiResult.Error(e.message ?: "网络请求失败")`：
+     * 网络断了、JSON 解析炸了、登录过期、服务端给了业务错误码 ——
+     * 到了 UI 层**全都是同一句话**，用户无法判断该重试、该登录还是该放弃。
+     *
+     * 现在按异常类型映射成 [ApiResult.ErrorKind]，
+     * 让每个界面能据此给出**不同的引导动作**。
+     */
     private suspend fun <T> safeApiCall(block: suspend () -> T): ApiResult<T> = try {
         ApiResult.Success(block())
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // 协程取消不是错误，必须原样抛出，否则会破坏结构化并发
+        throw e
+    } catch (e: ApiException) {
+        // 业务错误码：301 表示登录态失效，需要单独归类以便引导登录
+        ApiResult.Error(
+            message = e.message ?: "请求失败",
+            code = e.code,
+            kind = if (e.code == 301 || e.code == -462) ApiResult.ErrorKind.AUTH
+            else ApiResult.ErrorKind.BUSINESS,
+        )
+    } catch (e: DirectApi.ApiNetworkException) {
+        ApiResult.Error(e.message ?: "网络连接失败", kind = ApiResult.ErrorKind.NETWORK)
+    } catch (e: DirectApi.ApiHttpException) {
+        // 4xx/5xx：401/403 归为登录问题，其余算网络层失败
+        ApiResult.Error(
+            message = if (e.httpCode == 401 || e.httpCode == 403) {
+                "登录状态已失效，请重新登录"
+            } else {
+                "服务暂时不可用（HTTP ${e.httpCode}）"
+            },
+            code = e.httpCode,
+            kind = if (e.httpCode == 401 || e.httpCode == 403) ApiResult.ErrorKind.AUTH
+            else ApiResult.ErrorKind.NETWORK,
+        )
+    } catch (e: DirectApi.ApiParseException) {
+        ApiResult.Error(e.message ?: "响应数据异常", kind = ApiResult.ErrorKind.PARSE)
+    } catch (e: java.io.IOException) {
+        ApiResult.Error(e.message ?: "网络连接失败", kind = ApiResult.ErrorKind.NETWORK)
     } catch (e: Exception) {
-        ApiResult.Error(e.message ?: "网络请求失败")
+        ApiResult.Error(e.message ?: "请求失败", kind = ApiResult.ErrorKind.BUSINESS)
     }
 }

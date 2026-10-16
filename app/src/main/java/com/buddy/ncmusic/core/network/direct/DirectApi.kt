@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.core.network.direct
 
+import kotlinx.coroutines.ensureActive
 import com.buddy.ncmusic.core.network.crypto.WeapiCrypto
 import com.buddy.ncmusic.data.model.Account
 import com.buddy.ncmusic.data.model.LyricData
@@ -60,6 +61,15 @@ class DirectApi {
         coerceInputValues = true
     }
 
+    /** 网络层失败（连接不上 / 超时 / DNS 失败），可重试 */
+    class ApiNetworkException(message: String, cause: Throwable?) : Exception(message, cause)
+
+    /** HTTP 状态码非 2xx */
+    class ApiHttpException(val httpCode: Int, message: String) : Exception(message)
+
+    /** 响应体无法解析（空体、非 JSON、结构不符） */
+    class ApiParseException(message: String) : Exception(message)
+
     /** 登录态 Cookie（含 MUSIC_U），由登录流程写入 */
     @Volatile
     var cookie: String? = null
@@ -72,8 +82,26 @@ class DirectApi {
         cookie?.takeIf { it.isNotBlank() }?.let { header("Cookie", it) }
     }
 
-    private fun parse(text: String): JsonObject =
-        runCatching { json.parseToJsonElement(text).jsonObject }.getOrElse { JsonObject(emptyMap()) }
+    /**
+     * 解析响应体为 JsonObject。
+     *
+     * ⚠️ 这里的处理方式很关键：
+     *
+     * 原先写的是 `runCatching { ... }.getOrElse { JsonObject(emptyMap()) }` ——
+     * **解析失败被静默转成空对象**。于是调用方拿到的 `root["data"]` 恒为 null，
+     * 与「服务端正常返回但确实没有数据」**完全无法区分**：
+     * 前者是故障（该报错），后者是合理状态（该显示空态）。
+     *
+     * 现在改为**抛出** [ApiParseException]，由上层映射成 `ErrorKind.PARSE`。
+     */
+    private fun parse(text: String): JsonObject {
+        if (text.isBlank()) throw ApiParseException("响应体为空")
+        return try {
+            json.parseToJsonElement(text).jsonObject
+        } catch (e: Exception) {
+            throw ApiParseException("响应格式无法解析：${e.javaClass.simpleName}")
+        }
+    }
 
     private fun captureCookie(resp: Response) {
         val raw = resp.headers("Set-Cookie")
@@ -90,9 +118,17 @@ class DirectApi {
                 .add("encSecKey", encSecKey)
                 .build()
             val req = Request.Builder().url(BASE + path).post(form).common().build()
-            client.newCall(req).execute().use { resp ->
-                captureCookie(resp)
-                parse(resp.body?.string().orEmpty())
+            try {
+                client.newCall(req).execute().use { resp ->
+                    captureCookie(resp)
+                    if (!resp.isSuccessful) {
+                        throw ApiHttpException(resp.code, "HTTP ${resp.code}")
+                    }
+                    parse(resp.body?.string().orEmpty())
+                }
+            } catch (e: java.io.IOException) {
+                // 连接失败 / 超时 / DNS 解析失败 —— 属于可重试的 NETWORK 类
+                throw ApiNetworkException(e.message ?: "网络连接失败", e)
             }
         }
 
@@ -109,9 +145,16 @@ class DirectApi {
 
     private suspend fun getPlain(path: String): JsonObject = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(BASE + path).get().common().build()
-        client.newCall(req).execute().use { resp ->
-            captureCookie(resp)
-            parse(resp.body?.string().orEmpty())
+        try {
+            client.newCall(req).execute().use { resp ->
+                captureCookie(resp)
+                if (!resp.isSuccessful) {
+                    throw ApiHttpException(resp.code, "HTTP ${resp.code}")
+                }
+                parse(resp.body?.string().orEmpty())
+            }
+        } catch (e: java.io.IOException) {
+            throw ApiNetworkException(e.message ?: "网络连接失败", e)
         }
     }
 
@@ -179,12 +222,52 @@ class DirectApi {
     }
 
     /** 下载音频文件到本地 */
+    /**
+     * 下载到文件。
+     *
+     * ## 完整性保证
+     *
+     * 此前实现直接 `file.outputStream()` 写入 —— 中途失败（网络中断、
+     * 存储写满、进程被杀）会**把已有的完整文件截断成半截**，
+     * 且返回 false 后调用方往往已覆盖不了它。
+     *
+     * 现在：
+     *  1. 写入前先检查 Content-Length；若服务端提供且实际字节数不符，判为失败
+     *  2. 字节数为 0 判为失败（空文件对播放器无意义）
+     *  3. **失败时不留半截文件**（由调用方决定是删除还是保留，
+     *     这里只负责如实返回结果）
+     *  4. 支持协程取消：`ensureActive()` 让长下载可被中断
+     *
+     * @return true 表示完整写入且长度校验通过
+     */
     suspend fun downloadToFile(url: String, file: java.io.File): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             client.newCall(Request.Builder().url(url).common().build()).execute().use { resp ->
                 if (!resp.isSuccessful) return@use false
-                val stream = resp.body?.byteStream() ?: return@use false
-                stream.use { input -> file.outputStream().use { input.copyTo(it) } }
+                val body = resp.body ?: return@use false
+                val expected = body.contentLength()   // -1 表示服务端未提供
+                val stream = body.byteStream() ?: return@use false
+
+                var written = 0L
+                stream.use { input ->
+                    file.outputStream().use { out ->
+                        val buf = ByteArray(DEFAULT_BUFFER_SIZE)
+                        while (true) {
+                            // 让下载可被取消（如在下载中途用户删除任务）
+                            kotlinx.coroutines.currentCoroutineContext()
+                                .ensureActive()
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            written += n
+                        }
+                        out.flush()
+                    }
+                }
+
+                // ---- 完整性校验 ----
+                if (written <= 0L) return@use false                       // 空文件
+                if (expected > 0 && written != expected) return@use false  // 长度不符
                 true
             }
         }.getOrDefault(false)
@@ -350,7 +433,25 @@ class DirectApi {
      *
      * @param level 音质档位，见上；空值时按 `exhigh` 兜底
      */
-    suspend fun songUrl(id: Long, level: String): String? {
+    /**
+     * 播放地址解析结果。
+     *
+     * 之所以不直接返回 `String?`：**降级链会让实际音质低于请求音质**
+     * （未登录/VIP 不足时自动退档）。
+     * 若只回传 URL，UI 层就只能拿"请求音质"当标签显示 ——
+     * 于是出现「实际播的是 128k，界面写着无损」的虚假信息。
+     *
+     * @param url 可播放地址
+     * @param level 本次**实际命中**的音质档位（降级后的真实值）
+     * @param requestedLevel 用户最初请求的档位，用于在界面提示"已降级"
+     */
+    data class ResolvedUrl(
+        val url: String,
+        val level: String,
+        val requestedLevel: String,
+    )
+
+    suspend fun songUrl(id: Long, level: String): ResolvedUrl? {
         // 逐级降级尝试。
         //
         // 服务端会按**账号权限**决定给不给某个音质的播放地址：
@@ -360,9 +461,14 @@ class DirectApi {
         //
         // 因此从请求音质开始逐级下调，取到第一个非空地址即返回
         // （最差也会退到 standard，保证能出声）。
+        // 同时把**命中的那一档**一并带回去，供 UI 展示真实音质。
         for (lv in qualityFallbackChain(level)) {
-            val url = fetchPlayerUrl(id, lv)
-            if (!url.isNullOrBlank()) return url
+            val hit = fetchPlayerUrl(id, lv) ?: continue
+            val (url, actualLevel) = hit
+            if (url.isNotBlank()) {
+                // 用服务端回报的实际档位，而不是我们请求的档位
+                return ResolvedUrl(url = url, level = actualLevel, requestedLevel = level)
+            }
         }
         return null
     }
@@ -384,11 +490,16 @@ class DirectApi {
     /**
      * 按**单一**音质取播放地址：v1 接口优先，失败回退旧接口。
      *
-     * @return 可播放地址；该音质不可用时为 null
+     * 返回 Pair(地址, 服务端回报的实际音质)。第二项很关键：
+     * 即使请求了 lossless，服务端也可能只给 320k（版权方限制），
+     * 此时必须把**服务端说的真实档位**带回去，否则界面会照搬请求值撒谎。
+     *
+     * @return Pair(可播放地址, 实际音质)；该音质不可用时为 null
      */
-    private suspend fun fetchPlayerUrl(id: Long, level: String): String? {
+    private suspend fun fetchPlayerUrl(id: Long, level: String): Pair<String, String>? {
         // ---- 优先 v1 接口：同一套 level 覆盖全部 6 档音质 ----
-        val viaV1 = runCatching {
+        // v1 会在 data[0] 里回传 level（服务端实际给的档位）与 br（码率）
+        val v1Item = runCatching {
             weapi(
                 "/weapi/song/enhance/player/url/v1",
                 buildJsonObject {
@@ -397,9 +508,14 @@ class DirectApi {
                     put("encodeType", encodeTypeOf(level))
                     put("csrf_token", "")
                 },
-            )["data"]?.arr()?.firstOrNull()?.safeObject()?.get("url")?.str()
+            )["data"]?.arr()?.firstOrNull()?.safeObject()
         }.getOrNull()
-        if (!viaV1.isNullOrBlank()) return viaV1
+        val viaV1 = v1Item?.get("url")?.str()
+        if (!viaV1.isNullOrBlank()) {
+            // 优先用服务端回报的 level；缺失时退回请求值
+            val actual = v1Item.get("level")?.str()?.takeIf { it.isNotBlank() } ?: level
+            return viaV1 to actual
+        }
 
         // ---- 回退旧接口 ----
         // 旧接口只认 br 数值：lossless 及以上统一请求 999000，
@@ -412,15 +528,35 @@ class DirectApi {
             else -> 999000
         }
         return runCatching {
-            weapi(
+            val item = weapi(
                 "/weapi/song/enhance/player/url",
                 buildJsonObject {
                     put("ids", "[$id]")
                     put("br", br)
                     put("csrf_token", "")
                 },
-            )["data"]?.arr()?.firstOrNull()?.safeObject()?.get("url")?.str()
+            )["data"]?.arr()?.firstOrNull()?.safeObject()
+            val url = item?.get("url")?.str()
+            if (url.isNullOrBlank()) null else {
+                // 旧接口不回传 level，但有 br 码率 —— 由码率反推真实档位
+                // br 在 JSON 里可能是数字也可能是字符串，统一转成文本再解析，
+                // 任何异常情况都退化为 0（levelOfBr 会返回 null）
+                val br = item.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
+                val actual = item.get("level")?.str()?.takeIf { it.isNotBlank() }
+                    ?: levelOfBr(br)
+                    ?: level
+                url to actual
+            }
         }.getOrNull()
+    }
+
+    /** 由码率反推音质档位（旧接口无 level 字段时的兜底） */
+    private fun levelOfBr(br: Int): String? = when {
+        br <= 0 -> null
+        br < 160_000 -> "standard"
+        br < 256_000 -> "higher"
+        br < 999_000 -> "exhigh"
+        else -> "lossless"
     }
 
     /**

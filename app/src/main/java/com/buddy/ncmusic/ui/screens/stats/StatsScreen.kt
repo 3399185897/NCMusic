@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.stats
 
+import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -99,7 +100,7 @@ fun StatsScreen(onBack: () -> Unit) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = rememberBottomSafeSpace()),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 // ---------- Hero 区 ----------

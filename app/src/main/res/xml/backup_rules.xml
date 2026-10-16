@@ -1,4 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 及以下的备份规则（fullBackupContent）。
+
+  ## 为什么必须排除 DataStore
+
+  登录凭据（`cookie`）与账号信息以明文存放在 DataStore 里，
+  位置是 `files/datastore/ncmusic.preferences_pb`。
+  它**既不属于 sharedpref 也不是 database 域**，而是落在 `file` 域 ——
+  只写 `<exclude domain="sharedpref">` 是拦不住的。
+
+  一旦允许备份，Cookie 会被上传到用户的 Google 云备份中；
+  而该 Cookie 等价于完整的账号登录态，泄露即可直接冒用身份。
+  这类**不可撤销的长期凭据**不应离开设备。
+
+  ## 原实现的问题
+  这份文件此前**未被 Manifest 引用**（缺少 android:fullBackupContent），
+  等于完全没生效；且其中排除的 `device_info.xml` 与实际存储位置不符。
+-->
 <full-backup-content>
+    <!-- 认证数据：Cookie、账号信息，明文存放于 DataStore -->
+    <exclude domain="file" path="datastore/" />
+    <!-- 兼容旧版本遗留位置 -->
     <exclude domain="sharedpref" path="device_info.xml" />
 </full-backup-content>
