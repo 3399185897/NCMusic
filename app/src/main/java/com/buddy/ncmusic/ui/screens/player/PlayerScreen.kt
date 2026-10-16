@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.player
 
+import androidx.compose.material3.Switch
 import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import com.buddy.ncmusic.ui.components.DownloadController
 import androidx.compose.material.icons.filled.Share
@@ -469,6 +470,40 @@ fun PlayerScreen(
                             songDetailSheet = false
                         }
 
+                        // ---------- 桌面歌词开关 ----------
+                        //
+                        // 从播放器主界面移到这里：它是对播放器的一次性设置，
+                        // 放在详情面板里既能与其它操作并列，
+                        // 也避免主界面进度条上方堆叠过多按钮。
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { toggleOverlay() }
+                                .padding(horizontal = 24.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                // QueueMusic 是 Icons.Filled 的扩展属性，
+                                // 必须带接收者，不能单独引用
+                                imageVector = Icons.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = if (overlayOn) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.width(16.dp))
+                            Text(
+                                text = "桌面歌词",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            // 用 Switch 而非"点击即切换"的整行：
+                            // 开关类设置需要一眼看出当前状态
+                            Switch(
+                                checked = overlayOn,
+                                onCheckedChange = { toggleOverlay() },
+                            )
+                        }
+
                         // ---------- 关于歌曲 ----------
                         DetailAction(icon = Icons.Filled.Info, label = "关于歌曲") {
                             showSongInfo = true
@@ -652,29 +687,21 @@ fun PlayerScreen(
 
             // 进度与控制（紧凑贴近内容区）
             Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
-                // 进度条上方一行：左「歌曲详情」，右「桌面歌词开关」
+                // 进度条上方：仅保留左侧的歌曲详情入口。
+                //
+                // 原先右侧还有一个「桌面歌词」开关，现已移入详情面板 ——
+                // 两者都是"对当前歌曲 / 播放器的一次性操作"，
+                // 归到同一个入口更省空间，也让进度条上方不再散落多个按钮。
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    // 两端分布：把详情入口放在左侧（贴近阅读起点），
-                    // 歌词开关保持在右侧不动
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 歌曲详情入口：下载 / 分享 / 关于
+                    // 歌曲详情入口：下载 / 分享 / 桌面歌词 / 关于
                     IconButton(onClick = { songDetailSheet = true }) {
                         Icon(
                             imageVector = Icons.Filled.MoreVert,
                             contentDescription = "歌曲详情",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-
-                    IconButton(onClick = { toggleOverlay() }) {
-                        Icon(
-                            imageVector = Icons.Filled.QueueMusic,
-                            contentDescription = "桌面歌词开关",
-                            tint = if (overlayOn) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
