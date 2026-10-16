@@ -317,7 +317,11 @@ class MusicRepository(private val prefs: UserPreferences) {
      *
      * @return 成功时返回**保存位置的描述文本**，供 UI 直接展示
      */
-    suspend fun downloadSong(song: Song, quality: String): ApiResult<String> = safeApiCall {
+    suspend fun downloadSong(
+        song: Song,
+        quality: String,
+        onProgress: ((Float) -> Unit)? = null,
+    ): ApiResult<String> = safeApiCall {
         val url = api.downloadUrl(song.id, quality)
             ?: throw ApiException(
                 -1,
@@ -347,8 +351,16 @@ class MusicRepository(private val prefs: UserPreferences) {
         val customUri = ctx.userPreferences.userStateFlow.first().cacheDirUri
 
         // ---- 1) 用户自定义目录（SAF）优先 ----
+        // 进度换算：SAF 路径先下到 cacheDir 临时文件（0~90%），
+        // 再复制进目标目录（90~100%）。两段共用同一回调。
+        val report: (Long, Long) -> Unit = { done, total ->
+            if (onProgress != null) {
+                onProgress(if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else -1f)
+            }
+        }
+
         val savedToCustom = customUri.isNotBlank() &&
-            saveToSafDir(ctx, android.net.Uri.parse(customUri), fileName, mime, url, tmpBase)
+            saveToSafDir(ctx, android.net.Uri.parse(customUri), fileName, mime, url, tmpBase, report)
 
         // ---- 2) 回退：App 专属外部目录 ----
         // 自定义目录写入失败时不直接报错，避免「目录设错了就完全下不了」
@@ -364,7 +376,7 @@ class MusicRepository(private val prefs: UserPreferences) {
             // 完整文件截断成半截，用户既丢了旧文件又没拿到新文件。
             val tmp = java.io.File(ctx.cacheDir, "$tmpBase.$ext")
             try {
-                if (!api.downloadToFile(url, tmp)) {
+                if (!api.downloadToFile(url, tmp, report)) {
                     throw ApiException(-1, "下载失败（网络中断或数据不完整）")
                 }
                 replaceFileAtomically(tmp, target)
@@ -425,11 +437,12 @@ class MusicRepository(private val prefs: UserPreferences) {
         mime: String,
         url: String,
         tmpBase: String,
+        onProgress: ((Long, Long) -> Unit)? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         val tmp = java.io.File(ctx.cacheDir, "$tmpBase.tmp")
         try {
             runCatching {
-                if (!api.downloadToFile(url, tmp)) return@runCatching false
+                if (!api.downloadToFile(url, tmp, onProgress)) return@runCatching false
 
                 val docId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
                 val parent = android.provider.DocumentsContract

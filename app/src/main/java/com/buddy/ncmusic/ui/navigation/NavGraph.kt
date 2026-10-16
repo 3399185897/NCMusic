@@ -261,7 +261,16 @@ fun NCMusicApp() {
                         playerOpen = true
                     },
                     onOpenPlaylist = { navController.navigate(Routes.playlist(it)) },
-                    onOpenArtist = { navController.navigate(Routes.artist(it)) },
+                    onOpenArtist = { id ->
+                            // ⚠️ 必须先收起全屏播放器再跳转。
+                            //
+                            // 播放器是"同树覆盖层"（非 NavHost 路由），
+                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
+                            // 用户点击后画面毫无变化（仍是播放器），
+                            // 需手动下滑才看到目标页面，等同"点击无反应"。
+                            playerOpen = false
+                            navController.navigate(Routes.artist(id))
+                        },
                 )
             }
             composable(
@@ -299,7 +308,16 @@ fun NCMusicApp() {
                     },
                     onOpenPlaylist = { navController.navigate(Routes.playlist(it)) },
                     onOpenIdentify = { navController.navigate(Routes.IDENTIFY) },
-                    onOpenArtist = { navController.navigate(Routes.artist(it)) },
+                    onOpenArtist = { id ->
+                            // ⚠️ 必须先收起全屏播放器再跳转。
+                            //
+                            // 播放器是"同树覆盖层"（非 NavHost 路由），
+                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
+                            // 用户点击后画面毫无变化（仍是播放器），
+                            // 需手动下滑才看到目标页面，等同"点击无反应"。
+                            playerOpen = false
+                            navController.navigate(Routes.artist(id))
+                        },
                 )
             }
             composable(
@@ -355,7 +373,16 @@ fun NCMusicApp() {
                         playerOpen = true
                     },
                     onBack = { navController.popBackStack() },
-                    onOpenArtist = { navController.navigate(Routes.artist(it)) },
+                    onOpenArtist = { id ->
+                            // ⚠️ 必须先收起全屏播放器再跳转。
+                            //
+                            // 播放器是"同树覆盖层"（非 NavHost 路由），
+                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
+                            // 用户点击后画面毫无变化（仍是播放器），
+                            // 需手动下滑才看到目标页面，等同"点击无反应"。
+                            playerOpen = false
+                            navController.navigate(Routes.artist(id))
+                        },
                 )
             }
             composable(Routes.HISTORY) {
@@ -365,7 +392,16 @@ fun NCMusicApp() {
                         playerOpen = true
                     },
                     onBack = { navController.popBackStack() },
-                    onOpenArtist = { navController.navigate(Routes.artist(it)) },
+                    onOpenArtist = { id ->
+                            // ⚠️ 必须先收起全屏播放器再跳转。
+                            //
+                            // 播放器是"同树覆盖层"（非 NavHost 路由），
+                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
+                            // 用户点击后画面毫无变化（仍是播放器），
+                            // 需手动下滑才看到目标页面，等同"点击无反应"。
+                            playerOpen = false
+                            navController.navigate(Routes.artist(id))
+                        },
                 )
             }
             composable(Routes.LOCAL) {
@@ -471,7 +507,16 @@ fun NCMusicApp() {
                 playerOpen = false
                 navController.navigate(Routes.LYRIC)
             },
-            onOpenArtist = { navController.navigate(Routes.artist(it)) },
+            onOpenArtist = { id ->
+                            // ⚠️ 必须先收起全屏播放器再跳转。
+                            //
+                            // 播放器是"同树覆盖层"（非 NavHost 路由），
+                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
+                            // 用户点击后画面毫无变化（仍是播放器），
+                            // 需手动下滑才看到目标页面，等同"点击无反应"。
+                            playerOpen = false
+                            navController.navigate(Routes.artist(id))
+                        },
             expanded = playerOpen,
         )
     }

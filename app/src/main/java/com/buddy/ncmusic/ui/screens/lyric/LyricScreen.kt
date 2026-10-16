@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.lyric
 
+import androidx.compose.ui.graphics.toArgb
 import com.buddy.ncmusic.ui.components.rememberCoverColor
 import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.background
@@ -208,18 +209,28 @@ private fun LyricRow(
     val emphasize = isCurrent || isFocused
 
     // 颜色策略：
-    // - 直线压住 → onSurface（深色主题即白色，浅色主题自动转深色）
-    // - 正在播放 → 保持自定义歌词色 / 主题色
-    // - 其余 → 灰色弱化
+    //  · 正在播放 → **封面动态取色**（跟随当前专辑的色调）
+    //  · 用户显式指定过歌词色 → 尊重用户选择
+    //  · 其余 → 灰色弱化
+    //
+    // ⚠️ 此处曾长期失效：判断"是否自定义过"用的是
+    // `custom != 0 && custom != -1`，而 `lyricColor` 的默认值
+    // 恰恰是 `0xFFFFFFFF`（白色）—— 该条件**恒为真**，
+    // 于是永远走 `Color(custom)` 显示白色，`coverColor` 形同虚设。
+    // 表现为"正在播放的歌词一直是白色，不随封面变色"。
+    //
+    // 现在把默认值与旧默认值都视为"未自定义"，让封面取色真正生效。
     val lineColor = when {
         isFocused -> MaterialTheme.colorScheme.onSurface
         isCurrent -> {
             val custom = customColor.toInt()
+            val customized = custom != 0 &&
+                custom != -1 &&
+                custom != Color.White.toArgb()      // 旧默认值，等同"未设置"
             when {
-                // 用户显式指定过歌词色则优先尊重
-                custom != 0 && custom != -1 -> Color(custom)
-                // 否则用封面动态取色
+                // 封面取色优先：这是"正在播放"行的默认表现
                 coverColor != null -> coverColor
+                customized -> Color(custom)
                 else -> MaterialTheme.colorScheme.primary
             }
         }

@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.components
 
+import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.Offset
@@ -259,8 +260,6 @@ fun SongListItem(
 fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     val shareIntentContext = LocalContext.current
-    var downloading by remember { mutableStateOf(false) }
-    var statusMsg by remember { mutableStateOf<String?>(null) }
     var showQualityPicker by remember { mutableStateOf(false) }
 
     if (showQualityPicker) {
@@ -269,28 +268,23 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
             title = { Text("选择下载音质") },
             text = {
                 Column {
-                    DOWNLOAD_QUALITIES.forEach { (q, label, kbps) ->
-                        val sizeText = estimateSizeMb(song.duration, kbps)
+                    // 只列出该曲目支持的档位（与播放器音质菜单同一口径）——
+                    // 列出做不到的档位会让用户"选了没效果"
+                    AudioQuality.supportedBy(song.maxBr).reversed().forEach { q ->
+                        val sizeText = estimateSizeMb(song.duration, q.kbps)
                             .let { if (it > 0) "约 %.1f MB".format(it) else "大小未知" }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
                                     showQualityPicker = false
-                                    downloading = true
-                                    statusMsg = "下载中（$label）…"
-                                    scope.launch {
-                                        when (val r = NCMusicApp.instance.musicRepository.downloadSong(song, q)) {
-                                            is ApiResult.Success -> statusMsg = r.data
-                                            is ApiResult.Error -> statusMsg = "下载失败：${r.message}"
-                                        }
-                                        downloading = false
-                                    }
+                                    // 交给全局控制器：进度在对话框与播放器面板间共享
+                                    DownloadController.download(song, q.level, scope)
                                 }
                                 .padding(vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(label, modifier = Modifier.weight(1f))
+                            Text(q.label, modifier = Modifier.weight(1f))
                             Text(
                                 text = sizeText,
                                 style = MaterialTheme.typography.bodySmall,
@@ -316,13 +310,40 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                 DetailRow("专辑", song.album?.name ?: "未知")
                 DetailRow("时长", formatDuration(song.duration))
                 DetailRow("歌曲 ID", song.id.toString())
-                statusMsg?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                // 下载进度：进行中显示进度条，结束后显示结果
+                val dl by DownloadController.state.collectAsState()
+                if (dl.songId == song.id && (dl.running || dl.finished)) {
+                    Spacer(Modifier.height(10.dp))
+                    if (dl.running) {
+                        Text(
+                            text = "下载中…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        if (dl.ratio >= 0f) {
+                            LinearProgressIndicator(
+                                progress = { dl.ratio },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = "${(dl.ratio * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else {
+                            // 服务端未返回总长：用不确定进度，不显示假百分比
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    } else {
+                        Text(
+                            text = dl.message.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (dl.success) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         },
@@ -343,8 +364,10 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                         )
                     }
                 }) { Text("分享") }
+                // 有下载任务在跑时禁用入口，避免重复发起
+                val dlBusy by DownloadController.state.collectAsState()
                 TextButton(
-                    enabled = !downloading,
+                    enabled = !dlBusy.running,
                     onClick = { showQualityPicker = true },
                 ) { Text("下载") }
                 TextButton(onClick = onDismiss) { Text("关闭") }
@@ -354,15 +377,6 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
 }
 
 /** 可选下载音质：code / 名称 / 近似码率(kbps) */
-private val DOWNLOAD_QUALITIES = listOf(
-    Triple("standard", "标准", 128),
-    Triple("higher", "较高", 192),
-    Triple("exhigh", "极高（推荐）", 320),
-    Triple("lossless", "无损 FLAC", 900),
-    Triple("hires", "Hi-Res", 1500),
-    Triple("jymaster", "超清母带", 2000),
-)
-
 /** 按码率与歌曲时长估算文件大小 */
 private fun estimateSizeMb(durationMs: Long, kbps: Int): Double {
     if (durationMs <= 0) return 0.0

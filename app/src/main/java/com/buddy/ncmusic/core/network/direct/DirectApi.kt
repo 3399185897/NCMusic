@@ -45,6 +45,9 @@ class DirectApi {
 
     companion object {
         const val BASE = "https://music.163.com"
+
+        /** 下载进度上报的最小字节间隔（256 KB） */
+        private const val PROGRESS_STEP_BYTES = 256L * 1024L
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         private const val BATCH = 200
@@ -240,7 +243,11 @@ class DirectApi {
      *
      * @return true 表示完整写入且长度校验通过
      */
-    suspend fun downloadToFile(url: String, file: java.io.File): Boolean = withContext(Dispatchers.IO) {
+    suspend fun downloadToFile(
+        url: String,
+        file: java.io.File,
+        onProgress: ((downloaded: Long, total: Long) -> Unit)? = null,
+    ): Boolean = withContext(Dispatchers.IO) {
         runCatching {
             client.newCall(Request.Builder().url(url).common().build()).execute().use { resp ->
                 if (!resp.isSuccessful) return@use false
@@ -249,6 +256,7 @@ class DirectApi {
                 val stream = body.byteStream() ?: return@use false
 
                 var written = 0L
+                var lastReported = 0L
                 stream.use { input ->
                     file.outputStream().use { out ->
                         val buf = ByteArray(DEFAULT_BUFFER_SIZE)
@@ -260,10 +268,19 @@ class DirectApi {
                             if (n < 0) break
                             out.write(buf, 0, n)
                             written += n
+                            // 进度回调节流：每 256KB 上报一次。
+                            // 若每读一 8KB 块都回调，UI 侧会因刷新过密而掉帧；
+                            // 总长未知（expected<=0）时也按该节奏上报，仅 total 为 0。
+                            if (onProgress != null && written - lastReported >= PROGRESS_STEP_BYTES) {
+                                lastReported = written
+                                onProgress(written, expected.coerceAtLeast(0L))
+                            }
                         }
                         out.flush()
                     }
                 }
+                // 收尾补一次，保证进度条能走到 100%
+                onProgress?.invoke(written, expected.coerceAtLeast(0L))
 
                 // ---- 完整性校验 ----
                 if (written <= 0L) return@use false                       // 空文件

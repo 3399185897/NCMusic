@@ -1,5 +1,18 @@
 package com.buddy.ncmusic.ui.screens.player
 
+import com.buddy.ncmusic.ui.components.DownloadController
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
+import com.buddy.ncmusic.util.audioSpecText
+import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -99,6 +112,7 @@ import com.buddy.ncmusic.ui.components.SkipPrevious
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(
     onBack: () -> Unit,
@@ -115,6 +129,12 @@ fun PlayerScreen(
     val state by PlaybackManager.state.collectAsState()
     val song = state.song
     var qualityMenuOpen by remember { mutableStateOf(false) }
+    // 歌曲详情面板（下载 / 分享 / 关于）
+    var songDetailSheet by remember { mutableStateOf(false) }
+    // 详情面板内的下载音质选择
+    var detailQualityPicker by remember { mutableStateOf(false) }
+    // 「关于歌曲」信息弹窗
+    var showSongInfo by remember { mutableStateOf(false) }
 
     // 本地 / 已下载曲目：不参与在线音质切换。
     //
@@ -302,17 +322,190 @@ fun PlayerScreen(
                         )
                     }
                     DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { qualityMenuOpen = false }) {
-                        qualityOptions.forEach { (q, label) ->
+                        // ⚠️ 只列出**该曲目官方支持**的档位。
+                        //
+                        // 原先固定列出全部 6 档 —— 若某首歌最高只到「极高」，
+                        // 用户选「无损」后服务端拿不到地址，会静默降级回原档位，
+                        // 表现为"选了音质完全不生效"。
+                        //
+                        // `song.maxBr` 为 0 时（接口未给出）不限制，退化为原行为。
+                        val available = AudioQuality.supportedBy(song?.maxBr ?: 0)
+                        available.forEach { q ->
                             DropdownMenuItem(
-                                text = { Text(if (q == state.quality) "$label ✓" else label) },
+                                text = {
+                                    Text(if (q.level == state.quality) "${q.label} ✓" else q.label)
+                                },
                                 onClick = {
-                                    PlaybackManager.changeQuality(q)
+                                    PlaybackManager.changeQuality(q.level)
                                     qualityMenuOpen = false
                                 },
                             )
                         }
                     }
                 }
+            }
+
+            // ============================================================
+            // 歌曲详情面板：下载 / 分享 / 关于
+            //
+            // 放在播放器内（而非另开页面）的原因：这是围绕"当前这首歌"的
+            // 一次性操作，停留在播放器上更符合使用节奏，
+            // 也避免为几个动作引入新的导航目的地。
+            // ============================================================
+            val sheetSong = state.song
+            if (songDetailSheet && sheetSong != null) {
+                ModalBottomSheet(
+                    onDismissRequest = { songDetailSheet = false },
+                    sheetState = rememberModalBottomSheetState(),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(bottom = 28.dp)) {
+                        Text(
+                            text = sheetSong.name,
+                            modifier = Modifier.padding(horizontal = 24.dp),
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = sheetSong.artistNames,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(8.dp))
+
+                        // ---------- 下载 ----------
+                        DetailAction(
+                            icon = Icons.Filled.Download,
+                            label = "下载歌曲",
+                            enabled = !isLocalTrack,
+                        ) {
+                            detailQualityPicker = !detailQualityPicker
+                        }
+
+                        if (detailQualityPicker) {
+                            // 只列出该曲目支持的档位（与右上角音质菜单同一口径）
+                            val dlQualities = AudioQuality.supportedBy(sheetSong.maxBr)
+                            dlQualities.reversed().forEach { q ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            DownloadController.download(
+                                                song = sheetSong,
+                                                quality = q.level,
+                                                scope = scope,
+                                            )
+                                            detailQualityPicker = false
+                                        }
+                                        .padding(horizontal = 40.dp, vertical = 10.dp),
+                                ) {
+                                    Text(q.label, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+
+                        // ---------- 下载进度 ----------
+                        val dl by DownloadController.state.collectAsState()
+                        if (dl.songId == sheetSong.id) {
+                            Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
+                                if (dl.running) {
+                                    Text(
+                                        text = "下载中…",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    if (dl.ratio >= 0f) {
+                                        LinearProgressIndicator(
+                                            progress = { dl.ratio },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = "${(dl.ratio * 100).toInt()}%",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    } else {
+                                        // 服务端未给长度：用不确定进度，不画假百分比
+                                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                                    }
+                                } else if (dl.finished) {
+                                    Text(
+                                        text = dl.message.orEmpty(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = if (dl.success) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.error
+                                        },
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    TextButton(onClick = { DownloadController.clear() }) {
+                                        Text("知道了")
+                                    }
+                                }
+                            }
+                        }
+
+                        // ---------- 分享 ----------
+                        DetailAction(icon = Icons.Filled.Share, label = "分享歌曲") {
+                            val share = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "${sheetSong.name} - ${sheetSong.artistNames}\n" +
+                                        "https://music.163.com/song?id=${sheetSong.id}",
+                                )
+                            }
+                            runCatching {
+                                context.startActivity(
+                                    Intent.createChooser(share, "分享歌曲"),
+                                )
+                            }
+                            songDetailSheet = false
+                        }
+
+                        // ---------- 关于歌曲 ----------
+                        DetailAction(icon = Icons.Filled.Info, label = "关于歌曲") {
+                            showSongInfo = true
+                        }
+                    }
+                }
+            }
+
+            // 「关于歌曲」信息弹窗
+            val infoSong = state.song
+            if (showSongInfo && infoSong != null) {
+                AlertDialog(
+                    onDismissRequest = { showSongInfo = false },
+                    title = { Text("关于歌曲") },
+                    text = {
+                        Column {
+                            SongInfoRow("歌曲", infoSong.name)
+                            SongInfoRow("歌手", infoSong.artistNames)
+                            infoSong.album?.name?.takeIf { it.isNotBlank() }?.let {
+                                SongInfoRow("专辑", it)
+                            }
+                            if (infoSong.duration > 0) {
+                                SongInfoRow("时长", formatTime(infoSong.duration))
+                            }
+                            AudioQuality.highestOf(infoSong.maxBr)?.let {
+                                SongInfoRow("官方最高音质", it.label)
+                            }
+                            infoSong.audioSpecText()?.let {
+                                SongInfoRow("音频规格", it)
+                            }
+                            SongInfoRow("歌曲 ID", infoSong.id.toString())
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { showSongInfo = false }) { Text("关闭") }
+                    },
+                )
             }
 
             if (song == null) {
@@ -440,16 +633,42 @@ fun PlayerScreen(
                         song.artists.firstOrNull()?.id?.let(onOpenArtist)
                     },
                 )
+
+                // 音频规格（采样率 / 位深）—— 小字、弱化，不抢主信息
+                //
+                // 说明：采样率与位深按该曲目**可得的最高档位**推导，
+                // 而非用户当前选择的档位 —— 后者可能因账号权限拿不到，
+                // 那样显示的规格会与实听不符。服务端未给出码率时不显示。
+                song.audioSpecText()?.let { spec ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = spec,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                    )
+                }
             }
 
             // 进度与控制（紧凑贴近内容区）
             Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
-                // 桌面歌词开关（进度条上方最右侧）
+                // 进度条上方一行：左「歌曲详情」，右「桌面歌词开关」
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.End,
+                    // 两端分布：把详情入口放在左侧（贴近阅读起点），
+                    // 歌词开关保持在右侧不动
+                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // 歌曲详情入口：下载 / 分享 / 关于
+                    IconButton(onClick = { songDetailSheet = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "歌曲详情",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
                     IconButton(onClick = { toggleOverlay() }) {
                         Icon(
                             imageVector = Icons.Filled.QueueMusic,
@@ -649,6 +868,58 @@ fun PlayerScreen(
 }
 
 
+
+/** 详情面板的一行操作项 */
+@Composable
+private fun DetailAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+        )
+    }
+}
+
+/** 「关于歌曲」弹窗里的一行信息 */
+@Composable
+private fun SongInfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.width(96.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
 private fun formatTime(ms: Long): String {
     val totalSec = ms / 1000
     val min = totalSec / 60
@@ -669,24 +940,9 @@ private fun playModeLabel(mode: PlayMode): String = when (mode) {
     PlayMode.SHUFFLE -> "随机播放"
 }
 
-/**
- * 可选的在线音质档位。
- *
- * 注意 "local" 不在此列 —— 本地文件没有档位概念，
- * 它的显示值由扩展名推断，且不允许切换（菜单对本地曲目禁用）。
- */
-private val qualityOptions = listOf(
-    "standard" to "标准",
-    "higher" to "较高",
-    "exhigh" to "极高",
-    "lossless" to "无损",
-    "hires" to "Hi-Res",
-    "jymaster" to "超清母带",
-)
-
 private fun qualityLabel(q: String): String = when (q) {
     // 本地文件由扩展名承担显示，这里只作兜底
     "local" -> "本地"
     // 未知档位不再一律显示「标准」—— 那会把"服务端给了意料外的值"掩盖成正常状态
-    else -> qualityOptions.firstOrNull { it.first == q }?.second ?: q
+    else -> AudioQuality.of(q)?.label ?: q
 }

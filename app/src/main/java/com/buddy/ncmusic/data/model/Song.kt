@@ -16,6 +16,25 @@ data class Song(
     val duration: Long = 0,
     val fee: Int = 0,
     val mv: Long = 0,
+    // ============================================================
+    // 各档位可用性
+    //
+    // 网易云不同接口给出的字段不一致：
+    //  · `song/detail` 会给 `maxbr`（单一数值）
+    //  · 其余接口通常只给 `h`/`m`/`l`/`sq`/`hr` 这组**档位对象**
+    //
+    // 因此两者都要收：只读 `maxbr` 会在多数列表场景下拿不到值，
+    // 导致"音质限制"形同虚设。
+    // ============================================================
+
+    /** 服务端直接给出的最高码率（部分接口才有） */
+    @JsonNames("maxbr") val maxBrRaw: Int = 0,
+
+    val l: QualityInfo? = null,
+    val m: QualityInfo? = null,
+    val h: QualityInfo? = null,
+    val sq: QualityInfo? = null,
+    val hr: QualityInfo? = null,
     /** 本地文件路径（本地歌单歌曲专用；网络歌曲为空） */
     @kotlinx.serialization.Transient val localPath: String? = null,
 ) {
@@ -29,7 +48,35 @@ data class Song(
     /** 专辑封面地址 */
     val coverUrl: String
         get() = album?.picUrl.orEmpty()
+
+    /**
+     * 该曲目在服务端**可提供的最高码率**（bps）；`0` 表示未知。
+     *
+     * 取「显式 `maxbr`」与「各档位对象码率」的较大者 ——
+     * 后者用于补全只给档位对象的接口。
+     */
+    val maxBr: Int
+        get() = maxOf(
+            maxBrRaw,
+            l?.br ?: 0,
+            m?.br ?: 0,
+            h?.br ?: 0,
+            sq?.br ?: 0,
+            hr?.br ?: 0,
+        )
 }
+
+/**
+ * 单个音质档位的可用性信息。
+ *
+ * `br` 为码率（bps），`size` 为文件字节数 —— 网易云在歌曲对象里
+ * 以 `h` / `m` / `l` / `sq` / `hr` 的形式给出。
+ */
+@Serializable
+data class QualityInfo(
+    val br: Int = 0,
+    val size: Long = 0,
+)
 
 @Serializable
 data class Artist(
