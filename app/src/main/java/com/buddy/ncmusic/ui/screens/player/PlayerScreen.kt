@@ -510,6 +510,9 @@ fun PlayerScreen(
                             PlaybackManager.changeQuality(q.level)
                             qualitySheetOpen = false
                         },
+                        // 与播放器其余部分（进度条、标题、播放键）同源取色，
+                        // 避免打开面板时颜色突变
+                        accentColor = coverColor,
                     )
                 }
             }

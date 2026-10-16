@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.components
 
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,8 +59,21 @@ fun QualitySheetContent(
     song: Song?,
     currentLevel: String,
     onPick: (AudioQuality) -> Unit,
+    /**
+     * 封面动态取色。
+     *
+     * 传入后，选中态底色与勾选标记都跟随封面色调 ——
+     * 与播放器的进度条、歌曲标题、播放大按钮保持同一色系。
+     *
+     * 之所以要改：面板原先用主题色 `primaryContainer`，
+     * 而播放器其余部分都跟随封面取色 —— 打开面板时突然切到品牌红，
+     * 视觉上"跳"了一下。为 `null` 时回退到主题色。
+     */
+    accentColor: androidx.compose.ui.graphics.Color? = null,
 ) {
     val maxBr = song?.maxBr ?: 0
+    // 取色优先，未取到则回退主题色
+    val accent = accentColor ?: MaterialTheme.colorScheme.primary
 
     Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
         // ---------- 标题行 ----------
@@ -92,6 +106,7 @@ fun QualitySheetContent(
                 quality = q,
                 selected = q.level == currentLevel,
                 enabled = AudioQuality.availableFor(q.level, maxBr),
+                accent = accent,
                 onClick = { onPick(q) },
             )
         }
@@ -104,13 +119,12 @@ private fun QualityRow(
     quality: AudioQuality,
     selected: Boolean,
     enabled: Boolean,
+    /** 封面取色（已回退为具体颜色，不会是 null） */
+    accent: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
 ) {
-    // 选中态用主题色淡染，未选中的可用项用容器色；不可用项整体降透明度
-    val container = when {
-        selected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-        else -> MaterialTheme.colorScheme.surfaceContainerHigh
-    }
+    // 未选中的可用项不加底色（靠留白分隔），选中项用**封面取色**淡染 ——
+    // 原来是给所有项都铺一层容器色，再给选中项叠主题色，层次容易糊在一起
     val alpha = if (enabled) 1f else 0.38f
     val onContainer = MaterialTheme.colorScheme.onSurface
 
@@ -119,7 +133,10 @@ private fun QualityRow(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 3.dp)
             .clip(AppShapes.of(16.dp))
-            .background(if (selected) container else androidx.compose.ui.graphics.Color.Transparent)
+            .background(
+                if (selected) accent.copy(alpha = 0.16f)
+                else androidx.compose.ui.graphics.Color.Transparent,
+            )
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +155,9 @@ private fun QualityRow(
                 text = quality.shortLabel,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = onContainer.copy(alpha = alpha * 0.85f),
+                // 选中项让短标识也带上取色，进一步呼应封面
+                color = if (selected) accent.copy(alpha = alpha)
+                else onContainer.copy(alpha = alpha * 0.85f),
             )
         }
 
@@ -204,13 +223,15 @@ private fun QualityRow(
                 modifier = Modifier
                     .size(22.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary),
+                    .background(accent),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     imageVector = Icons.Filled.Check,
                     contentDescription = "已选择",
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    // 封面取色的明度不可控（浅色封面上取色可能接近白），
+                    // 故按亮度自动选黑/白前景，保证勾选始终可见
+                    tint = accent.contrastForeground(),
                     modifier = Modifier.size(15.dp),
                 )
             }
@@ -240,6 +261,18 @@ private fun VipBadge(tier: VipTier, alpha: Float = 1f) {
         )
     }
 }
+
+/**
+ * 按背景色亮度选择可读的前景（黑或白）。
+ *
+ * 封面取色来自专辑图，亮度完全不可控 ——
+ * 若固定用白色勾选，遇到浅色封面（取色接近白/黄）就会看不清。
+ * 0.5 是常用的分界；用 luminance() 而非简单平均，符合感知亮度定义。
+ */
+private fun androidx.compose.ui.graphics.Color.contrastForeground():
+    androidx.compose.ui.graphics.Color =
+    if (luminance() > 0.5f) androidx.compose.ui.graphics.Color.Black
+    else androidx.compose.ui.graphics.Color.White
 
 /** 标题右侧的一句规格提示 */
 private fun Song.audioSpecHint(): String =
