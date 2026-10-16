@@ -373,12 +373,15 @@ fun PlayerScreen(
 
                         if (detailQualityPicker) {
                             // 只列出该曲目支持的档位（与右上角音质菜单同一口径）
-                            val dlQualities = AudioQuality.supportedBy(sheetSong.maxBr)
-                            dlQualities.reversed().forEach { q ->
+                            // 与音质面板同口径：官方展示的档位、由高到低、
+                            // 超出该曲目能力的置灰（而非隐藏）
+                            AudioQuality.visibleDescending.forEach { q ->
+                                val dlAvailable =
+                                    AudioQuality.availableFor(q.level, sheetSong.maxBr)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable {
+                                        .clickable(enabled = dlAvailable) {
                                             DownloadController.download(
                                                 song = sheetSong,
                                                 quality = q.level,
@@ -388,7 +391,16 @@ fun PlayerScreen(
                                         }
                                         .padding(horizontal = 40.dp, vertical = 10.dp),
                                 ) {
-                                    Text(q.label, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        text = if (dlAvailable) q.label
+                                        else "${q.label}（本曲不支持）",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = if (dlAvailable) {
+                                            MaterialTheme.colorScheme.onSurface
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                        },
+                                    )
                                 }
                             }
                         }

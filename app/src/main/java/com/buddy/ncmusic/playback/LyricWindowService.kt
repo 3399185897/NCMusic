@@ -42,6 +42,12 @@ class LyricWindowService : Service() {
     companion object {
         private const val CHANNEL_ID = "lyric_overlay_channel"
         private const val NOTIFICATION_ID = 2001
+
+        /** 阴影模糊半径 —— 比原先的 8f 收敛一些，减轻"重影"感 */
+        private const val SHADOW_RADIUS = 6f
+
+        /** 阴影垂直偏移 */
+        private const val SHADOW_DY = 1.5f
     }
 
     private lateinit var windowManager: WindowManager
@@ -130,7 +136,8 @@ class LyricWindowService : Service() {
             textSize = fontSize.toFloat()
             setPadding(8, 28, 48, 28)
             setBackgroundColor(Color.TRANSPARENT)
-            setShadowLayer(8f, 0f, 2f, Color.BLACK)
+            // 阴影颜色随歌词颜色自适应（见 contrastingShadow）
+            setShadowLayer(SHADOW_RADIUS, 0f, SHADOW_DY, contrastingShadow(textColor))
             maxLines = 3
             gravity = Gravity.CENTER
             text = "暂无歌词"
@@ -221,6 +228,30 @@ class LyricWindowService : Service() {
         uiHandler.postDelayed(hideLockRunnable, 3000)
     }
 
+    /**
+     * 按歌词颜色选一个**对比色**作为阴影。
+     *
+     * 桌面歌词悬浮在任意画面上，没有稳定背景，靠阴影保证可读性。
+     * 若阴影恒为黑色：
+     *  · 浅色歌词（默认白）→ 正常，黑阴影衬出白字
+     *  · 深色歌词（用户自选）→ 黑字 + 黑阴影，文字糊成一团
+     *
+     * 因此按**感知亮度**（Rec.601 加权，比简单均值更贴近人眼）判断：
+     * 亮字配深阴影、暗字配浅阴影，两种情况下字都清晰。
+     */
+    private fun contrastingShadow(textColor: Int): Int {
+        val r = (textColor shr 16) and 0xFF
+        val g = (textColor shr 8) and 0xFF
+        val b = textColor and 0xFF
+        val luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+        // 保留一点透明度，避免阴影过实而显得脏
+        return if (luminance > 0.5) {
+            Color.argb(190, 0, 0, 0)
+        } else {
+            Color.argb(190, 255, 255, 255)
+        }
+    }
+
     private fun observePrefs() {
         val prefs = NCMusicApp.instance.userPreferences
         scope.launch {
@@ -231,6 +262,12 @@ class LyricWindowService : Service() {
                 lyricView?.apply {
                     setTextColor(textColor)
                     textSize = fontSize.toFloat()
+                    // ⚠️ 颜色变化时必须一并更新阴影。
+                    //
+                    // 原实现只更新字色、不更新阴影，而阴影是固定的黑色 ——
+                    // 用户把歌词改成深色后，黑字配黑阴影会**糊成一团**，
+                    // 且因为阴影有偏移，看起来像"重影"。
+                    setShadowLayer(SHADOW_RADIUS, 0f, SHADOW_DY, contrastingShadow(textColor))
                 }
                 lockView?.apply {
                     setImageResource(

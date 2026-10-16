@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.screens.settings
 
+import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -349,14 +350,21 @@ const val CACHE_MIN_MB = 1024
 /** 最大缓存上限（MB）：10 GB —— 与滑块右端、精确输入上限一致 */
 const val CACHE_MAX_MB = 10240
 
-private val qualityOptions = listOf(
-    "standard" to "标准（128k）",
-    "higher" to "较高（192k）",
-    "exhigh" to "极高（320k）",
-    "lossless" to "无损（FLAC）",
-    "hires" to "Hi-Res",
-    "jymaster" to "超清母带",
-)
+/**
+ * 可选的音质档位。
+ *
+ * ⚠️ 这里**不再自行维护一份列表**。
+ *
+ * 此前设置页与播放器各写一份档位列表，且内容已经漂移：
+ * 设置页写「极高（320k）」「无损（FLAC）」「Hi-Res」，
+ * 播放器写「极高」「无损」「高清臻音」—— 同一个档位两种叫法。
+ *
+ * 现统一取自 [AudioQuality]，与播放器音质面板、下载音质选择器**同源**。
+ * 档位与规格文案均与官方一致（无损为 `最高48kHz/16bit`）。
+ * 「较高」官方不在列表中展示，此处同样不出现。
+ */
+private val qualityOptions: List<Pair<String, String>> =
+    AudioQuality.visibleDescending.map { it.level to "${it.label}（${it.specText}）" }
 
 private val startPageOptions = listOf(
     "home" to "推荐",
@@ -1397,4 +1405,4 @@ private fun QualitySubGroup(
 }
 
 private fun qualityLabelOf(q: String): String =
-    qualityOptions.firstOrNull { it.first == q }?.second ?: q
+    AudioQuality.of(q)?.let { "${it.label}（${it.specText}）" } ?: q

@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.playback
 
+import com.buddy.ncmusic.util.AudioQuality
 import com.buddy.ncmusic.ui.util.isReduceMotionEnabled
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.map
@@ -641,16 +642,18 @@ object PlaybackManager {
         return java.io.File(trimmed).toURI().toString()
     }
 
-    /** 音质档位的中文标签（与设置页保持一致） */
+    /**
+     * 音质档位的中文标签。
+     *
+     * ⚠️ 不再自行维护映射表 —— 原先这里写死了各档名称，
+     * 其中 `hires` 还是过时的「Hi-Res」（官方现叫「高清臻音」），
+     * 与播放器面板显示的档位名对不上。
+     * 现统一取自 [AudioQuality]，保证全应用同一档位只有一种叫法。
+     */
     private fun qualityLabelOf(level: String): String = when (level) {
-        "standard" -> "标准"
-        "higher" -> "较高"
-        "exhigh" -> "极高"
-        "lossless" -> "无损"
-        "hires" -> "Hi-Res"
-        "jymaster" -> "超清母带"
+        // 本地文件没有在线档位概念，单独处理
         "local" -> "本地"
-        else -> level
+        else -> AudioQuality.of(level)?.label ?: level
     }
 
     /**
