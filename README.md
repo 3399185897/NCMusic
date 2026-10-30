@@ -11,7 +11,7 @@
 [![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)](#-技术栈)
 [![Media3](https://img.shields.io/badge/Media3-ExoPlayer-FF6F00)](#-技术栈)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v1.3.1-2ea44f)](../../releases)
+[![Release](https://img.shields.io/badge/Release-v1.3.0-2ea44f)](../../releases)
 
 [✨ 功能特性](#-功能特性) · [📸 界面预览](#-界面预览) · [🚀 构建运行](#-构建运行) · [⚠️ 免责声明](#️-免责声明)
 
@@ -81,15 +81,6 @@
 
 ## 📦 更新日志
 
-### v1.3.1
-
-**🧭 内容与首页修正**
-
-- 移除首页顶部品牌问候卡片，首屏直接从每日推荐开始，信息密度更干净。
-- 雷达歌单接入网易云移动端官方「你的雷达歌单」，固定展示 7 张；数量不足时使用同账号每日推荐补齐。
-- 登录、退出或切换账号后，首页个性化区块会立即刷新，不再残留上一位账号的雷达内容。
-- 最近播放改用真实播放记录接口，按最近播放时间排序，不再复用听歌排行；进入「我的」时会自动刷新。
-
 ### v1.3.0
 
 **🎨 Material 3 大改版**
@@ -98,7 +89,7 @@
 - 启动阶段加入品牌遮罩，并并行预热排行榜、首页推荐、雷达歌单与热搜。
 - 雷达歌单改为官方 Material 3 Hero Carousel，精选 6 个歌单。
 - 设置页分类图标统一使用主题色；登录页与关于页按参考站重构。
-- 新增首页品牌问候（v1.3.1 已移除）、MD3 Snackbar、层级化 surface 与统一动效令牌。
+- 新增首页品牌问候（已移除）、MD3 Snackbar、层级化 surface 与统一动效令牌。
 
 ### v1.2.1
 
