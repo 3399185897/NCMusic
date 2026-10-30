@@ -3,6 +3,7 @@ package com.buddy.ncmusic.ui.screens.search
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.buddy.ncmusic.NCMusicApp
+import com.buddy.ncmusic.data.cache.ContentCache
 import com.buddy.ncmusic.data.model.Song
 import com.buddy.ncmusic.util.ApiResult
 import kotlinx.coroutines.Job
@@ -36,18 +37,24 @@ class SearchViewModel : ViewModel() {
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    /**
-     * 失败性质。界面据此区分"网络失败（可重试）"与"服务端返回空结果"。
-     * 这是 `ApiResult.ErrorKind` 贯通到 UI 的落点。
-     */
+    /** 搜索失败的性质，用于区分“可重试的网络错误”和不可重试的数据错误。 */
     private val _errorKind = MutableStateFlow<ApiResult.ErrorKind?>(null)
     val errorKind: StateFlow<ApiResult.ErrorKind?> = _errorKind.asStateFlow()
 
-    /** 是否已执行过一次搜索（用于区分"还没搜"与"搜了但没结果"） */
+    /** 是否已经完成过一次有效搜索；用于区分“尚未搜索”和“搜索后确实为空”。 */
     private val _searched = MutableStateFlow(false)
     val searched: StateFlow<Boolean> = _searched.asStateFlow()
 
     private var searchJob: Job? = null
+
+    /**
+     * 搜索请求代次。
+     *
+     * 取消旧协程后，旧协程仍可能执行到 `finally`。若只依赖 Job 状态，
+     * 旧请求会把新请求的 searching/error 清掉。每次查询递增代次，
+     * 所有状态回写都校验代次，保证只有最新请求能修改 UI。
+     */
+    private var searchGeneration = 0L
 
     init {
         loadHot()
@@ -58,25 +65,21 @@ class SearchViewModel : ViewModel() {
 
     fun onQueryChange(text: String) {
         _query.value = text
+        val generation = ++searchGeneration
         searchJob?.cancel()
+        _searched.value = false
+        _error.value = null
+        _errorKind.value = null
         if (text.isBlank()) {
             _results.value = emptyList()
-            _error.value = null
-            _errorKind.value = null
-            _searched.value = false
-            // ⚠️ 必须复位 searching。
-            //
-            // 原先漏了这一步：若上一次搜索已把 searching 置 true，
-            // 随后用户清空输入框时 searchJob 被取消，而被取消的协程
-            // **不会执行到 doSearch 末尾的 `_searching.value = false`** ——
-            // 于是 searching 永久停在 true，界面顶部进度条一直转。
             _searching.value = false
             return
         }
-        // 300ms 防抖
+        _results.value = emptyList()
+        // 350ms 防抖：接近 Material 3 的 medium 时长，避免每个拼音声母都发请求。
         searchJob = viewModelScope.launch {
-            delay(300)
-            doSearch(text)
+            delay(SEARCH_DEBOUNCE_MS)
+            doSearch(text, generation)
         }
     }
 
@@ -84,10 +87,16 @@ class SearchViewModel : ViewModel() {
         val kw = keyword.trim()
         if (kw.isEmpty()) return
         _query.value = kw
+        val generation = ++searchGeneration
         searchJob?.cancel()
+        _results.value = emptyList()
+        _searched.value = false
+        _error.value = null
+        _errorKind.value = null
+        _searching.value = true
         searchJob = viewModelScope.launch {
             prefs.addSearchHistory(kw)
-            doSearch(kw)
+            doSearch(kw, generation)
         }
     }
 
@@ -99,51 +108,49 @@ class SearchViewModel : ViewModel() {
         viewModelScope.launch { prefs.clearSearchHistory() }
     }
 
-    /**
-     * 执行搜索。
-     *
-     * 用 try/finally 保证 [searching] **在任何路径下都能复位**：
-     *  · 正常返回
-     *  · 请求抛异常（如未预期的运行时异常）
-     *  · 协程被取消（用户改动输入 / 点了别的搜索）
-     *
-     * 原先没有 finally —— 任一异常路径都会让 searching 卡在 true，
-     * 表现为「进度条一直转，但结果永远不会出现」。
-     *
-     * 注意：CancellationException 必须**继续向上抛**（不吞掉），
-     * 否则会破坏结构化并发；finally 会在抛出前正常执行。
-     */
-    private suspend fun doSearch(keyword: String) {
+    private suspend fun doSearch(keyword: String, generation: Long) {
+        if (generation != searchGeneration) return
         _searching.value = true
         _error.value = null
+        _errorKind.value = null
         try {
             when (val r = repo.search(keyword)) {
-                is ApiResult.Success -> {
+                is ApiResult.Success -> if (generation == searchGeneration) {
                     _results.value = r.data
-                    _error.value = null
-                    _errorKind.value = null
+                    _searched.value = true
                 }
-                is ApiResult.Error -> {
-                    // 保留上一次结果（若有）不清空 —— 空结果会与"搜索失败"混淆；
-                    // 错误仅通过 _error 暴露，由界面区分展示。
+
+                is ApiResult.Error -> if (generation == searchGeneration) {
+                    _results.value = emptyList()
                     _error.value = r.message
                     _errorKind.value = r.kind
                 }
             }
         } finally {
-            _searching.value = false
-            // 标记"已搜过"：即使被取消也说明用户发起过搜索，
-            // 界面据此决定是否展示空态文案（而非把空白当加载中）
-            _searched.value = true
+            // 只有仍是最新请求才收掉加载态；取消中的旧请求不得干扰新请求。
+            if (generation == searchGeneration) _searching.value = false
         }
     }
 
     private fun loadHot() {
         viewModelScope.launch {
+            if (ContentCache.isFresh()) {
+                ContentCache.hotWords?.let {
+                    _hotWords.value = it.take(20)
+                    return@launch
+                }
+            }
             when (val r = repo.searchHot()) {
-                is ApiResult.Success -> _hotWords.value = r.data.take(20)
+                is ApiResult.Success -> {
+                    ContentCache.storeHotWords(r.data)
+                    _hotWords.value = r.data.take(20)
+                }
                 is ApiResult.Error -> Unit
             }
         }
+    }
+
+    private companion object {
+        const val SEARCH_DEBOUNCE_MS = 350L
     }
 }

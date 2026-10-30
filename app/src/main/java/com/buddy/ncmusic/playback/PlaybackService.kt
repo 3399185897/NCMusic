@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaStyleNotificationHelper.MediaStyle
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -33,6 +34,7 @@ import kotlinx.coroutines.withContext
  * 点击通过 PendingIntent.getService → onStartCommand 直接调用 PlaybackManager，
  * 不依赖 MediaSession 的命令转发，因此不会出现"点击无反应"。
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
 
     companion object {

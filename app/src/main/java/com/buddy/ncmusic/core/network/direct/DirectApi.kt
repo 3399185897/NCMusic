@@ -1,5 +1,7 @@
 package com.buddy.ncmusic.core.network.direct
 
+import com.buddy.ncmusic.BuildConfig
+import com.buddy.ncmusic.core.network.crypto.EapiCrypto
 import kotlinx.coroutines.ensureActive
 import com.buddy.ncmusic.core.network.crypto.WeapiCrypto
 import com.buddy.ncmusic.data.model.Account
@@ -46,12 +48,96 @@ class DirectApi {
     companion object {
         const val BASE = "https://music.163.com"
 
+        /**
+         * eapi 通道域名（按优先级依次尝试）。
+         *
+         * 与 [BASE]（Web 端）是**两套能力**：高解析音质（Hi-Res / 母带 /
+         * 空间音频）只在 eapi 开放，weapi 会按 Web 端能力裁剪，
+         * 即使 VIP 也拿不到地址。
+         *
+         * 三个域名实测**服务端返回完全一致**，故可互相兜底：
+         *  · `interface.music.163.com` —— 官方移动端域名
+         *  · `music.163.com` —— 与 weapi 同域，网络最稳（weapi 走的就是它）
+         *  · `api.music.163.com` —— 备用
+         *
+         * 之所以轮询：部分运营商网络对 interface 子域存在解析/连接异常，
+         * 表现为「eapi 抛异常 → 回落 weapi → 高音质被判无权限」。
+         * 把与 weapi 同域的地址排在第二，等于用"已验证可达"的域名兜底。
+         */
+        private val EAPI_HOSTS = listOf(
+            "https://interface.music.163.com",
+            "https://music.163.com",
+            "https://api.music.163.com",
+        )
+
+        /**
+         * eapi 客户端档案：(os, appver, osver)，**按能力从高到低排列**。
+         *
+         * ⚠️ Hi-Res / 超清母带 / 空间音频是**移动端专属能力**。
+         * 之前强制 `os=pc`，服务端按 PC 客户端裁剪 —— 即使账号是 VIP、
+         * 歌曲也确实有 Hi-Res 源（官方客户端「高清臻音」显示为可选并已勾选），
+         * 我们请求 `hires` 仍只拿回无损（br≈901303 与 sq 完全一致）。
+         *
+         * 因此先按移动端身份请求，拿不到目标档位再退回 PC。
+         */
+        private val EAPI_PROFILES = listOf(
+            EapiProfile(
+                os = "android",
+                appver = "9.1.20",
+                osver = "Android 14",
+                // ⚠️ UA 必须与 os 匹配。
+                // Cookie 声明 android、UA 却是桌面 Chrome —— 这种自相矛盾的
+                // 客户端指纹会被服务端按"未知客户端"降权处理。
+                ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            ),
+            EapiProfile(
+                os = "pc",
+                appver = "3.1.6",
+                osver = "Windows 10",
+                ua = UA,
+            ),
+        )
+
         /** 下载进度上报的最小字节间隔（256 KB） */
         private const val PROGRESS_STEP_BYTES = 256L * 1024L
         private const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         private const val BATCH = 200
     }
+
+    /**
+     * eapi 请求体里的 `header` 字段（设备信息 JSON 字符串）。
+     *
+     * ⚠️ 移动端 eapi 请求**必须**带这个字段。缺了它，服务端会按
+     * "能力未知的基础客户端"处理 —— 表现为高解析音质一律降级到无损，
+     * 即使账号是 VIP、歌曲也确实有 Hi-Res 源。
+     *
+     * `deviceId` 必须**稳定**（同一设备多次请求保持一致），
+     * 否则每次都被当成新设备，同样影响权益判定。
+     */
+    private fun eapiHeader(profile: EapiProfile): String {
+        val id = Regex("(?:^|;)\\s*deviceId=([^;]+)")
+            .find(cookie.orEmpty())
+            ?.groupValues?.get(1)
+            ?: "com.buddy.ncmusic.device"
+        return buildJsonObject {
+            put("os", profile.os)
+            put("appver", profile.appver)
+            put("osver", profile.osver)
+            put("deviceId", id)
+            put("requestId", java.util.UUID.randomUUID().toString())
+            put("channel", "netease")
+        }.toString()
+    }
+
+    /** eapi 客户端档案：os / 版本 / UA 必须互相自洽 */
+    private data class EapiProfile(
+        val os: String,
+        val appver: String,
+        val osver: String,
+        val ua: String,
+    )
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -136,15 +222,128 @@ class DirectApi {
         }
 
     /**
-     * 「私人雷达」的固定歌单 id。
+     * eapi 通道请求。
      *
-     * 网易云没有公开此能力的 API，社区通行做法即固定 id + 登录 cookie。
-     * 该 id 实测返回的歌单名为「私人雷达」。
+     * 与 [weapi] 的区别：
+     *  · 域名是 `interface.music.163.com`
+     *  · 加密是 AES-128-ECB + MD5 摘要（见 [EapiCrypto]）
+     *  · **Cookie 必须含 `os=pc`** —— 服务端据此判定客户端类型；
+     *    缺少时部分接口会按未知客户端裁剪能力（高音质拿不到地址）
+     *
+     * 内部会**依次尝试 [EAPI_HOSTS] 中的多个域名**，任一成功即返回。
+     *
+     * @param path `/eapi/...` 形式的完整路径
      */
-    private val RADAR_PLAYLIST_ID: Long = 3136952023L
+    private suspend fun eapi(
+        path: String,
+        body: JsonObject = JsonObject(emptyMap()),
+        profile: EapiProfile = EAPI_PROFILES.first(),
+    ): JsonObject {
+        // 依次尝试各个 eapi 域名，任一个成功即返回。
+        // 全部失败时抛出「最后一个」异常——诊断串会显示它的具体原因。
+        var last: Throwable? = null
+        for (host in EAPI_HOSTS) {
+            val r = runCatching { eapiOn(profile, host, path, body) }
+            if (r.isSuccess) return r.getOrThrow()
+            last = r.exceptionOrNull()
+        }
+        throw last ?: ApiNetworkException("eapi 通道不可用", null)
+    }
 
-    /** 私人雷达在返回列表中的位置（对应拼贴墙最大的 80×80 方块） */
-    private val RADAR_INDEX = 2
+    /** 在**单个** eapi 域名上、以指定客户端档案执行请求。 */
+    private suspend fun eapiOn(
+        profile: EapiProfile,
+        host: String,
+        path: String,
+        body: JsonObject,
+    ): JsonObject = withContext(Dispatchers.IO) {
+        // 摘要与密文用的都是 `/api/...` 路径，只有请求地址是 `/eapi/...`
+        val apiPath = path.replaceFirst("/eapi/", "/api/")
+        val params = EapiCrypto.encrypt(apiPath, body.toString())
+        val form = FormBody.Builder().add("params", params).build()
+        val req = Request.Builder()
+            .url(host + path)
+            .post(form)
+            .header("Referer", "https://music.163.com/")
+            .header("User-Agent", profile.ua)
+            .header("Cookie", cookieForEapi(profile))
+            // ⚠️ 显式要求**不压缩**。
+            //
+            // OkHttp 默认会加 `Accept-Encoding: gzip` 并负责透明解压，但 eapi 网关
+            // 返回的是 `Transfer-Encoding: chunked` + `Content-Encoding: gzip`，
+            // 实测这条链路上解压环节一旦失配，`body.string()` 拿到的是
+            // **压缩字节按 UTF-8 解出来的乱码** —— 它不抛异常，只是不是 JSON，
+            // 最终表现成「解析失败」，极难反推。
+            //
+            // eapi 响应只有几百字节，压缩毫无收益，索性直接要明文。
+            .header("Accept-Encoding", "identity")
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                captureCookie(resp)
+                if (!resp.isSuccessful) {
+                    throw ApiHttpException(resp.code, "HTTP ${resp.code}")
+                }
+                val text = resp.body?.string().orEmpty()
+                try {
+                    parse(text)
+                } catch (e: ApiParseException) {
+                    // eapi 返回非 JSON 时，把「状态码 / 长度 / 内容开头」
+                    // 一起带出去 —— 否则只能看到笼统的"解析失败"，
+                    // 无法判断是空响应、被劫持的 HTML，还是别的东西。
+                    val ctype = resp.header("Content-Type").orEmpty().substringBefore(';')
+                    val head = text.take(60).replace(Regex("\\s+"), " ").ifBlank { "<空>" }
+                    throw ApiParseException(
+                        "HTTP${resp.code} len=${text.length} ct=$ctype body=$head",
+                    )
+                }
+            }
+        } catch (e: java.io.IOException) {
+            throw ApiNetworkException(e.message ?: "网络连接失败", e)
+        }
+    }
+
+    /**
+     * 为 eapi 请求准备 Cookie：**强制 `os=pc`，并精简到关键字段**。
+     *
+     * ## 为什么要精简
+     *
+     * 实测：同样的代码、同样的网络，本机只带 `os=pc` 时 eapi 返回
+     * `200 + text/plain + 738B` 正常 JSON；而真机带完整登录 Cookie 时
+     * 返回 `200 + application/json + 空 body`。
+     *
+     * 说明不是"没登录"，而是网关对**完整 Cookie 的字段组合**处理不同 ——
+     * 完整 Cookie 里混有大量埋点/实验字段（`NMTID`、`_ntes_nuid`、
+     * `JSESSIONID*`、`WNMCID` 等），它们对 eapi 毫无用处，却可能触发
+     * 网关的异常分支，最终给一个"什么都不说"的空响应。
+     *
+     * 因此只保留鉴权与客户端标识所需的最小集合，其余一律剔除。
+     *
+     * ## 为什么强制覆盖 os
+     *
+     * `os` 决定服务端按哪类客户端裁剪能力。若登录时拿到的是
+     * `os=android` 之类的值，而我们用 PC 的 eapi 请求格式，
+     * 两者不匹配同样可能被静默拒绝。统一按 `pc` 处理。
+     */
+    private fun cookieForEapi(profile: EapiProfile): String {
+        val raw = cookie?.trim().orEmpty()
+        // 只保留鉴权字段；os / appver / osver 由 profile 强制注入。
+        // 完整 Cookie 里的埋点/实验字段曾导致网关返回「200 + 空 body」，
+        // 因此这里必须白名单裁剪。
+        val keep = listOf(
+            "MUSIC_U", "MUSIC_A", "MUSIC_R_U", "__csrf", "deviceId",
+        )
+        val kept = raw.split(';')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filter { kv -> keep.any { k -> kv.startsWith("$k=") } }
+            .toMutableList()
+        kept.add("os=${profile.os}")
+        kept.add("appver=${profile.appver}")
+        kept.add("osver=${profile.osver}")
+        kept.add("channel=netease")
+        return kept.joinToString("; ")
+    }
 
     private suspend fun getPlain(path: String): JsonObject = withContext(Dispatchers.IO) {
         val req = Request.Builder().url(BASE + path).get().common().build()
@@ -347,52 +546,133 @@ class DirectApi {
     }
 
     /**
-     * 雷达歌单（个性化歌单）。
+     * 官方「你的雷达歌单」。
      *
-     * 与「推荐歌单」共用个性化推荐体系，但走独立端点并指定批次，
-     * 因此二者内容不重复，适合作为首页另一个歌单区块。
+     * 数据来自网易云移动端首页的 `homepage/block/page`。该区块会随登录账号
+     * 返回不同的官方雷达歌单。
+     *
+     * **官方给几张就展示几张**，不再用其它歌单补足 —— 补足会产生
+     * 「雷达歌单 + 每日推荐」的混合列表，与官方客户端该区块不一致。
+     * 仅当官方区块**完全取不到**时，才按每日推荐 → 个性化歌单逐级回退，
+     * 以免首页出现空白区块。
+     *
+     * @param limit 首页需要展示的歌单数量
+     * @param refresh 下拉刷新时请求服务端重新生成首页区块
      */
+    suspend fun radarPlaylists(limit: Int = 7, refresh: Boolean = false): List<Playlist> {
+        if (limit <= 0) return emptyList()
+
+        val result = LinkedHashMap<Long, Playlist>()
+        var radarFailure: Throwable? = null
+
+        runCatching { officialRadarPlaylists(refresh) }
+            .onFailure { radarFailure = it }
+            .getOrNull()
+            .orEmpty()
+            .forEach { playlist ->
+                if (result.size < limit) result.putIfAbsent(playlist.id, playlist)
+            }
+
+        // ⚠️ 只有**官方区块完全取不到**时才回退，不再"补足到 7 张"。
+        //
+        // 原先只要官方数量不足 7，就用每日推荐 / 个性化歌单填满 ——
+        // 于是首页显示的是「雷达歌单 + 一堆别的歌单」的混合体，
+        // 与官方客户端的该区块必然不一致。现在官方给几张就显示几张。
+        if (result.isEmpty()) {
+            val fallback = runCatching { recommendResourcePlaylists(limit) }
+            fallback.getOrNull().orEmpty().forEach { playlist ->
+                if (result.size < limit) result.putIfAbsent(playlist.id, playlist)
+            }
+            if (result.isEmpty() && fallback.isFailure) {
+                throw radarFailure
+                    ?: fallback.exceptionOrNull()
+                    ?: IllegalStateException("雷达歌单加载失败")
+            }
+        }
+
+        if (result.isEmpty()) {
+            // 官方与每日推荐都为空时，才是最后一层账号级回退。
+            runCatching { personalizedPlaylists(limit + 4) }
+                .getOrNull()
+                .orEmpty()
+                .forEach { playlist ->
+                    if (result.size < limit) result.putIfAbsent(playlist.id, playlist)
+                }
+        }
+
+        return result.values.toList()
+    }
+
     /**
-     * 雷达歌单（首页拼贴墙的数据源）。
+     * 账号级「推荐歌单」。
      *
-     * ## 组成
+     * 数据来自 `/v1/discovery/recommend/resource`，即官方客户端首页
+     * 「推荐歌单」区块与「每日推荐」页共用的那份歌单 ——
+     * **必须登录**，内容随账号口味变化、每日更新。
      *
-     * 1. **第一位固定为「私人雷达」**
-     *    网易云**未公开**该能力的 API，社区通行做法是直接取固定歌单 id。
-     *    实测 `v6/playlist/detail` 返回的歌单名确为「私人雷达」。
-     *    该歌单需要登录态才有曲目内容，但歌单元信息（名称 / 封面）匿名即可取到，
-     *    因此这里用 `runCatching` 包裹 —— **失败就跳过，不影响其余 19 个**。
-     *
-     * 2. **其余位置用「推荐歌单」补齐**
-     *    为保证拼贴墙 18 个方块封面互不重复，多取 4 条候选再按 id 去重。
-     *
-     * @param limit 期望返回的总数（首页拼贴墙需要 18 个方块，故默认 20）
+     * ⚠️ 不要用 `/personalized/playlist` 充当首页推荐歌单：
+     * 那个接口**未登录也返回同一份通用列表**，
+     * 无论谁登录看到的都一样，完全没有个性化可言。
      */
-    suspend fun radarPlaylists(limit: Int = 20): List<Playlist> {
-        val result = mutableListOf<Playlist>()
+    suspend fun recommendPlaylists(limit: Int = 30): List<Playlist> =
+        recommendResourcePlaylists(limit)
 
-        // ---- 1) 私人雷达（非关键路径，失败静默跳过）----
-        // 插到索引 2：首页拼贴墙的方块顺序中，第 3 个（index 2）是最大的 80×80 方块，
-        // 把私人雷达放在这里视觉上最醒目，符合它「核心推荐」的定位。
-        runCatching {
-            val root = getPlain("/api/v6/playlist/detail?id=$RADAR_PLAYLIST_ID")
-            root["playlist"]?.toPlaylist()
-        }.getOrNull()?.let { radar ->
-            if (result.size >= RADAR_INDEX) result.add(RADAR_INDEX, radar) else result += radar
-        }
+    /** 网易云移动端首页的「你的雷达歌单」区块。 */
+    private suspend fun officialRadarPlaylists(refresh: Boolean): List<Playlist> {
+        val root = weapi(
+            "/weapi/homepage/block/page",
+            buildJsonObject {
+                put("refresh", refresh)
+                put("cursor", "")
+                put("csrf_token", "")
+            },
+        )
+        val blocks = root["data"]?.safeObject()?.get("blocks")?.arr().orEmpty()
+        val radarBlock = blocks.asSequence()
+            .mapNotNull { it.safeObject() }
+            .firstOrNull { block ->
+                // ⚠️ 这里**不能**用 `mainTitle ?: subTitle` 的写法。
+                //
+                // 官方区块的 `uiElement.mainTitle.title` 经常是**空字符串**
+                // 而 `subTitle.title` 才是「你的雷达歌单」。
+                // 空串不是 null，`?:` 不会回退 —— 于是标题恒为空，
+                // `contains("雷达歌单")` 永不成立，整个区块被判定为不存在，
+                // 上层只好用每日推荐歌单补齐：
+                // 表现为「与官方不同步」「下拉刷新看不出变化」
+                // 「切换账号也不更新」。三处症状同源。
+                //
+                // 现在把所有可能的标题都取出，只要有一个非空且命中即可；
+                // 另加 blockCode 兜底（官方标题可能改文案，但区块 code 稳定）。
+                val ui = block["uiElement"]?.safeObject()
+                val titles = listOfNotNull(
+                    ui?.get("mainTitle")?.safeObject()?.get("title")?.str(),
+                    ui?.get("subTitle")?.safeObject()?.get("title")?.str(),
+                )
+                val code = block["blockCode"]?.str()?.uppercase().orEmpty()
+                // 命中规则（两条任一）：
+                //  · 标题含「雷达歌单」—— 官方标题形如「是 XXX 的雷达歌单」，
+                //    其中 XXX 是当前登录账号的昵称，天然随账号变化
+                //  · blockCode 含 RADAR_PLAYLIST / PLAYLIST_RADAR ——
+                //    官方改标题文案时区块 code 通常稳定
+                // 不能放宽到「雷达」两个字：首页另有「雷达新歌」区块，会错抓。
+                titles.any { it.isNotBlank() && it.contains("雷达歌单") } ||
+                    "RADAR_PLAYLIST" in code ||
+                    "PLAYLIST_RADAR" in code
+            } ?: return emptyList()
 
-        // ---- 2) 推荐歌单补齐 + 去重 ----
-        val need = (limit - result.size).coerceAtLeast(0)
-        if (need > 0) {
-            // 多取 4 条作为去重/失效的缓冲
-            val root = getPlain("/api/personalized/playlist?limit=${limit + 4}")
-            val recommendations = root["result"]?.arr()?.mapNotNull { it.toPlaylist() } ?: emptyList()
-            result += recommendations
-                .filterNot { rec -> result.any { it.id == rec.id } }
-                .take(need)
-        }
+        return radarBlock["creatives"]?.arr().orEmpty().mapNotNull { it.toRadarPlaylist() }
+    }
 
-        return result
+    /** 每日推荐歌单：账号级、每日更新，用于补齐官方雷达区块。 */
+    private suspend fun recommendResourcePlaylists(limit: Int): List<Playlist> {
+        val root = weapi(
+            "/weapi/v1/discovery/recommend/resource",
+            buildJsonObject { put("csrf_token", "") },
+        )
+        val recommend = root["recommend"]?.arr()
+            ?: root["data"]?.safeObject()?.get("recommend")?.arr()
+            ?: emptyList()
+        return recommend.mapNotNull { it.toPlaylist() }.distinctBy { it.id }.take(limit)
     }
 
     /**
@@ -466,6 +746,21 @@ class DirectApi {
         val url: String,
         val level: String,
         val requestedLevel: String,
+        /**
+         * 首选档位探测失败的原因（简短诊断串）。
+         *
+         * 形如 `有Cookie/eapi:code=200`——用于区分
+         * 「请求根本没发出去」与「服务端收到但拒绝」，
+         * 会附在降级提示里，便于反馈时说明现象。
+         */
+        val detail: String = "",
+        /**
+         * 实际档位是否**低于**请求档位。
+         *
+         * 只有"降级"才值得提示用户。服务端有时会给**更高**的规格
+         * （例如请求无损却返回 Hi-Res 流），那是好事，不该弹"不可用"。
+         */
+        val degraded: Boolean = false,
     )
 
     suspend fun songUrl(id: Long, level: String): ResolvedUrl? {
@@ -479,12 +774,23 @@ class DirectApi {
         // 因此从请求音质开始逐级下调，取到第一个非空地址即返回
         // （最差也会退到 standard，保证能出声）。
         // 同时把**命中的那一档**一并带回去，供 UI 展示真实音质。
+        // 首选档位（用户真正选的那个）失败时的原因，回传给上层拼进提示
+        var requestedDetail = ""
         for (lv in qualityFallbackChain(level)) {
-            val hit = fetchPlayerUrl(id, lv) ?: continue
-            val (url, actualLevel) = hit
-            if (url.isNotBlank()) {
+            val probe = fetchPlayerUrl(id, lv)
+            if (lv == level) requestedDetail = probe.detail
+            val url = probe.url
+            if (!url.isNullOrBlank()) {
                 // 用服务端回报的实际档位，而不是我们请求的档位
-                return ResolvedUrl(url = url, level = actualLevel, requestedLevel = level)
+                return ResolvedUrl(
+                    url = url,
+                    level = probe.level,
+                    requestedLevel = level,
+                    detail = requestedDetail,
+                    // 仅在**实际低于请求**时才算降级；
+                    // 服务端给更高规格（如请求无损却返回 Hi-Res）不提示。
+                    degraded = levelRank(probe.level) < levelRank(level),
+                )
             }
         }
         return null
@@ -510,52 +816,179 @@ class DirectApi {
             "hires" -> listOf("hires", "lossless", "exhigh", "standard")
             "lossless" -> listOf("lossless", "exhigh", "standard")
             "exhigh" -> listOf("exhigh", "standard")
+            "higher" -> listOf("higher", "standard")
             else -> listOf("standard")
         }
     }
 
+    /** 单次音质探测的结果。[url] 为空表示该档位取不到地址。 */
+    private data class PlayerUrlProbe(
+        val url: String?,
+        val level: String,
+        /** 简短诊断：Cookie 是否就绪 + 各通道的失败原因 */
+        val detail: String,
+        /** 服务端回报的码率（bps），用于横向比较不同 level 的产出 */
+        val br: Int = 0,
+    )
+
     /**
-     * 按**单一**音质取播放地址：v1 接口优先，失败回退旧接口。
+     * 把异常压成**可读且不被混淆**的短标签。
      *
-     * 返回 Pair(地址, 服务端回报的实际音质)。第二项很关键：
-     * 即使请求了 lossless，服务端也可能只给 320k（版权方限制），
-     * 此时必须把**服务端说的真实档位**带回去，否则界面会照搬请求值撒谎。
-     *
-     * @return Pair(可播放地址, 实际音质)；该音质不可用时为 null
+     * release 构建启用了 R8，`javaClass.simpleName` 只会得到 `a`/`b`/`c`，
+     * 对诊断毫无用处。这里优先用：
+     *  · 自有异常类型的 instanceof 判断（编译后是 instanceof，不受改名影响）
+     *  · 兜底用 `message`（运行时字符串，永远保留原样）
      */
-    private suspend fun fetchPlayerUrl(id: Long, level: String): Pair<String, String>? {
-        // ---- 优先 v1 接口：同一套 level 覆盖全部 6 档音质 ----
-        // v1 会在 data[0] 里回传 level（服务端实际给的档位）与 br（码率）
-        val v1Item = runCatching {
-            weapi(
-                "/weapi/song/enhance/player/url/v1",
-                buildJsonObject {
+    private fun Throwable?.describe(): String = when (this) {
+        null -> "未知"
+        is ApiHttpException -> "HTTP$httpCode"
+        is ApiNetworkException -> "网络:" + (message ?: "连接失败").take(40)
+        is ApiParseException -> "解析失败:" + (message ?: "?").take(80)
+        is java.net.UnknownHostException -> "DNS解析失败"
+        is java.net.SocketTimeoutException -> "超时"
+        is javax.net.ssl.SSLException -> "SSL握手失败"
+        else -> message?.take(60)?.ifBlank { null } ?: "无消息"
+    }
+
+    /**
+     * 按**单一**音质探测播放地址：eapi → weapi v1 → 旧接口。
+     *
+     * 分工：
+     *  · **eapi**（`interface.music.163.com`）—— 移动端通道，
+     *    Hi-Res / 母带 / 空间音频**只有这里给**；Web 端会被裁剪
+     *  · **weapi v1** —— Web 端，低档位（标准/极高/无损）可用，作兜底
+     *  · **旧接口**（按 br）—— 只认码率，最后一道保险
+     *
+     * [PlayerUrlProbe.detail] 会一路带到界面提示里，用来区分
+     * 「请求没发出去」与「服务端收到但拒绝」—— 两者修法完全不同。
+     */
+    private suspend fun fetchPlayerUrl(id: Long, level: String): PlayerUrlProbe {
+        val v1Body = buildJsonObject {
+            put("ids", "[$id]")
+            put("level", level)
+            put("encodeType", encodeTypeOf(level))
+            put("csrf_token", "")
+        }
+        // 末尾的 /bN 是构建号（versionCode）——
+        // 用于确认用户装的到底是不是当前构建：
+        // 此前多轮反馈因"旧包与新包同名（1.2.1/code 8）"而产生歧义。
+        val ckTag = (if (cookie.isNullOrBlank()) "无Cookie" else "有Cookie") +
+            "/b" + BuildConfig.VERSION_CODE
+
+        // ---- ① eapi 通道：**移动端 → PC 端逐个档案尝试** ----
+        //
+        // Hi-Res / 母带 / 空间音频属于移动端能力。此前强制 `os=pc`，
+        // 服务端按 PC 客户端裁剪 —— 即使账号是 VIP、歌曲确有 Hi-Res 源
+        // （官方「高清臻音」显示可选且已勾选），我们请求 hires 仍只拿回无损。
+        //
+        // 这里逐个档案请求，取第一个**达到请求档位**的结果；
+        // 都达不到时保留其中档位最高的一个（有胜于无）。
+        var bestProbe: PlayerUrlProbe? = null
+        val tried = StringBuilder()
+        for (profile in EAPI_PROFILES) {
+            // 每个档案的 body 都要带各自的 header（含 os/appver/deviceId）
+            val eapiBody = buildJsonObject {
+                put("ids", "[$id]")
+                put("level", level)
+                put("encodeType", encodeTypeOf(level))
+                put("csrf_token", "")
+                put("header", eapiHeader(profile))
+            }
+            val result = runCatching {
+                eapi("/eapi/song/enhance/player/url/v1", eapiBody, profile)["data"]
+                    ?.arr()?.firstOrNull()?.safeObject()
+            }
+            val item = result.getOrNull()
+            val br = item?.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
+            val actual = reconcileLevel(item?.get("level")?.str(), br, level)
+            val tag = when {
+                // ⚠️ 不能用 javaClass.simpleName —— release 开了 R8，
+                // 异常类名会被混淆成 a/b/c，诊断信息就废了。
+                result.isFailure ->
+                    "os=${profile.os}/" + result.exceptionOrNull().describe()
+                item == null -> "os=${profile.os}/无data"
+                else -> "os=${profile.os}/code=${item.get("code")?.str()}/br=$br" +
+                    "/fee=${item.get("fee")?.str()}/payed=${item.get("payed")?.str()}"
+            }
+            if (tried.isNotEmpty()) tried.append("|")
+            tried.append(tag)
+
+            val url = item?.get("url")?.str()
+            if (!url.isNullOrBlank()) {
+                val probe = PlayerUrlProbe(url, actual, "$ckTag/$tag", br)
+                // 达到或超过请求档位 → 直接采用
+                if (levelRank(actual) >= levelRank(level)) return probe
+                if (bestProbe == null || levelRank(actual) > levelRank(bestProbe.level)) {
+                    bestProbe = probe
+                }
+            }
+        }
+        // 降级时**额外探测更高档位**：
+        // 如果 `jymaster` / `sky` 能拿到明显更高的码率，说明「高清臻音」
+        // 对应的 level 并不是 `hires`，而是别的枚举值 —— 这能一次性
+        // 区分「歌曲确实没有 Hi-Res」与「我们的 level 映射错了」。
+        bestProbe?.let { probe ->
+            // 向上探测更高档位，并且**真正采用更优结果** —— 不只是诊断。
+            //
+            // 实测（《我不难过》孙燕姿）：
+            //   请求 hires    → br = 901,303（无损）
+            //   请求 jymaster → br = 3,018,378（3 Mbps，换算约 96kHz/24bit）
+            // 说明服务端把高解析资源挂在 `jymaster` 名下，`hires` 反而只给无损。
+            // 因此不能只按请求的 level 取一次就收工。
+            var best = probe
+            val probes = StringBuilder()
+            for (lv in listOf("jymaster", "sky")) {
+                val probeBody = buildJsonObject {
                     put("ids", "[$id]")
-                    put("level", level)
-                    put("encodeType", encodeTypeOf(level))
+                    put("level", lv)
+                    put("encodeType", "flac")
                     put("csrf_token", "")
-                },
-            )["data"]?.arr()?.firstOrNull()?.safeObject()
+                    put("header", eapiHeader(EAPI_PROFILES.first()))
+                }
+                val item = runCatching {
+                    eapi("/eapi/song/enhance/player/url/v1", probeBody)["data"]
+                        ?.arr()?.firstOrNull()?.safeObject()
+                }.getOrNull()
+                val b = item?.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
+                val url = item?.get("url")?.str()
+                if (probes.isNotEmpty()) probes.append(";")
+                probes.append("$lv=$b")
+
+                if (!url.isNullOrBlank()) {
+                    val actual = reconcileLevel(item.get("level")?.str(), b, lv)
+                    // 档位更高，或同档但码率更高才替换
+                    val better = levelRank(actual) > levelRank(best.level) ||
+                        (levelRank(actual) == levelRank(best.level) && b > best.br)
+                    if (better) {
+                        best = PlayerUrlProbe(url, actual, "$ckTag/$tried/探测[$probes]", b)
+                    }
+                }
+            }
+            return best.copy(detail = "$ckTag/$tried/探测[$probes]")
+        }
+        val eapiDetail = tried.toString()
+
+        // ---- ② weapi v1（Web 端兜底）----
+        val v1Item = runCatching {
+            weapi("/weapi/song/enhance/player/url/v1", v1Body)["data"]
+                ?.arr()?.firstOrNull()?.safeObject()
         }.getOrNull()
-        val viaV1 = v1Item?.get("url")?.str()
-        if (!viaV1.isNullOrBlank()) {
-            // 优先用服务端回报的 level；缺失时退回请求值
-            val actual = v1Item.get("level")?.str()?.takeIf { it.isNotBlank() } ?: level
-            return viaV1 to actual
+        v1Item?.get("url")?.str()?.takeIf { it.isNotBlank() }?.let { url ->
+            val br = v1Item.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
+            val actual = reconcileLevel(v1Item.get("level")?.str(), br, level)
+            return PlayerUrlProbe(url, actual, "$ckTag/$eapiDetail/weapi命中/br=$br", br)
         }
 
-        // ---- 回退旧接口 ----
-        // 旧接口只认 br 数值：lossless 及以上统一请求 999000，
-        // 让服务端在账号权限内返回最高音质。
-        // ⚠️ 不能填 320000 —— 那会把上限锁死在「极高」，
-        // 反而比请求无损拿到的还差。
+        // ---- ③ 旧接口（只认 br）----
+        // lossless 及以上统一请求 999000，让服务端在权限内给最高。
+        // ⚠️ 不能填 320000 —— 会把上限锁死在「极高」。
         val br = when (level) {
             "standard" -> 128000
             "higher" -> 192000
             else -> 999000
         }
-        return runCatching {
-            val item = weapi(
+        val legacyItem = runCatching {
+            weapi(
                 "/weapi/song/enhance/player/url",
                 buildJsonObject {
                     put("ids", "[$id]")
@@ -563,27 +996,83 @@ class DirectApi {
                     put("csrf_token", "")
                 },
             )["data"]?.arr()?.firstOrNull()?.safeObject()
-            val url = item?.get("url")?.str()
-            if (url.isNullOrBlank()) null else {
-                // 旧接口不回传 level，但有 br 码率 —— 由码率反推真实档位
-                // br 在 JSON 里可能是数字也可能是字符串，统一转成文本再解析，
-                // 任何异常情况都退化为 0（levelOfBr 会返回 null）
-                val br = item.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
-                val actual = item.get("level")?.str()?.takeIf { it.isNotBlank() }
-                    ?: levelOfBr(br)
-                    ?: level
-                url to actual
-            }
         }.getOrNull()
+        val legacyUrl = legacyItem?.get("url")?.str()
+        if (!legacyUrl.isNullOrBlank()) {
+            val brValue = legacyItem.get("br")?.str()?.toDoubleOrNull()?.toInt() ?: 0
+            val actual = reconcileLevel(legacyItem.get("level")?.str(), brValue, level)
+            return PlayerUrlProbe(legacyUrl, actual, "$ckTag/$eapiDetail/旧接口命中", brValue)
+        }
+
+        return PlayerUrlProbe(null, level, "$ckTag/$eapiDetail/全部通道无地址")
     }
 
-    /** 由码率反推音质档位（旧接口无 level 字段时的兜底） */
+
+    /**
+     * 由码率反推音质档位。
+     *
+     * 阈值按网易云实测码率划分：
+     * ```
+     * standard 128k / higher 192k / exhigh 320k
+     * lossless 约 0.8–1.0M / hires 约 1.4–2.8M / jymaster 3M+
+     * ```
+     *
+     * ⚠️ 不能只覆盖到 lossless —— 那样 Hi-Res 流会被误判成无损
+     * （曾因此把 2.79Mbps 的 Hi-Res 显示成「无损 / 48kHz/16bit」）。
+     */
     private fun levelOfBr(br: Int): String? = when {
         br <= 0 -> null
         br < 160_000 -> "standard"
         br < 256_000 -> "higher"
-        br < 999_000 -> "exhigh"
-        else -> "lossless"
+        br < 700_000 -> "exhigh"
+        br < 1_400_000 -> "lossless"
+        // 1.4M–4.5M 归 Hi-Res（高清臻音，96kHz/24bit）。
+        // 实测该档位典型码率约 2.8–3.0 Mbps（如 3018378）；
+        // 阈值若卡在 3.0M，会把 3018378 误判成「超清母带（192kHz/24bit）」，
+        // 界面规格就与实际不符。
+        br < 4_500_000 -> "hires"
+        else -> "jymaster"
+    }
+
+    /** 档位高低排序，用于比较两个来源给出的档位 */
+    private fun levelRank(level: String): Int = when (level) {
+        "standard" -> 0
+        "higher" -> 1
+        "exhigh" -> 2
+        "lossless" -> 3
+        "hires" -> 4
+        "jyeffect", "sky" -> 5
+        "jymaster" -> 6
+        else -> -1
+    }
+
+    /**
+     * 校正服务端回报的档位。
+     *
+     * ## 为什么需要校正
+     *
+     * `song/enhance/player/url/v1` 的 `level` 字段**并不可靠**：
+     * 实测请求 `hires` 时，服务端返回了 **2.79 Mbps 的流**（等于该曲
+     * `hr.br`），但 `level` 却写着 `lossless`。
+     * 若直接采信 `level`，界面会显示「无损 / 48kHz/16bit」并弹出
+     * 「已降级为无损」的提示 —— 而用户实际听到的正是 Hi-Res。
+     *
+     * 因此以**码率**为主要依据：当码率指向的档位**高于** `level` 时，
+     * 采信码率；否则沿用 `level`（避免把高码率 MP3 误抬档）。
+     */
+    private fun reconcileLevel(fieldLevel: String?, br: Int, requested: String): String {
+        // **码率优先**。
+        //
+        // `level` 字段经常只是"请求档位的回显"，甚至是另一个档位名：
+        // 实测向上探测 `jymaster` / `sky` 时，两者都回报 3,018,378 bps
+        // （96kHz/24bit），但 `level` 字段可能写 `sky` ——
+        // 若采信它，界面就会把用户选的「高清臻音」显示成「沉浸环绕声」。
+        //
+        // 码率是文件本身的属性，比标签可靠，因此先按码率判定；
+        // 码率无法判定（为 0）时才退回 `level` 字段。
+        levelOfBr(br)?.let { return it }
+        if (!fieldLevel.isNullOrBlank()) return fieldLevel
+        return requested
     }
 
     /**
@@ -596,15 +1085,21 @@ class DirectApi {
      * @return 下载直链；无权限或该音质不可用时为 null
      */
     suspend fun downloadUrl(id: Long, level: String): String? {
-        val root = weapi(
-            "/weapi/song/enhance/download/url/v1",
-            buildJsonObject {
-                put("id", "$id")
-                put("level", level.ifBlank { "exhigh" })
-                put("encodeType", encodeTypeOf(level))
-                put("csrf_token", "")
-            },
-        )
+        val body = buildJsonObject {
+            put("id", "$id")
+            put("level", level.ifBlank { "exhigh" })
+            put("encodeType", encodeTypeOf(level))
+            put("csrf_token", "")
+        }
+
+        // 与播放地址同一原因：高解析档位只在 eapi 通道开放，
+        // weapi 下即使 VIP 也会被判为无权限。
+        runCatching {
+            eapi("/eapi/song/enhance/download/url/v1", body)["data"]
+                ?.safeObject()?.get("url")?.str()
+        }.getOrNull()?.takeIf { it.isNotBlank() }?.let { return it }
+
+        val root = weapi("/weapi/song/enhance/download/url/v1", body)
         return root["data"]?.safeObject()?.get("url")?.str()
     }
 
@@ -616,7 +1111,8 @@ class DirectApi {
      * 若把 FLAC 数据写成 .mp3 后缀，部分播放器会拒绝识别。
      */
     fun encodeTypeOf(level: String): String = when (level) {
-        "lossless", "hires", "jymaster" -> "flac"
+        // 无损及以上（含空间音频类）均为 FLAC 容器
+        "lossless", "hires", "jymaster", "sky", "jyeffect" -> "flac"
         else -> "mp3"
     }
 
@@ -694,7 +1190,12 @@ class DirectApi {
         return root["id"]?.asLong() ?: root["playlist"]?.safeObject()?.get("id")?.asLong()
     }
 
-    /** 播放历史（type 0 = 全部，1 = 最近一周） */
+    /**
+     * 听歌排行（type 0 = 全部，1 = 最近一周）。
+     *
+     * 注意：这是按播放次数排序的「听歌排行」，不是按时间排序的
+     * 「最近播放」。界面上的最近播放请使用 [recentSongs]。
+     */
     suspend fun playHistory(uid: Long, type: Int = 0): List<Song> {
         val root = weapi(
             "/weapi/v1/play/record",
@@ -706,6 +1207,36 @@ class DirectApi {
         )
         val arr = root["allData"]?.arr() ?: root["weekData"]?.arr() ?: emptyList()
         return arr.mapNotNull { it.safeObject()?.get("song")?.toSong() }
+    }
+
+    /**
+     * 真实最近播放（按播放时间倒序）。
+     *
+     * `/api/v1/play/record` 返回的是听歌排行；移动端的「最近播放」
+     * 使用 `/api/play-record/song/list`，歌曲位于每行记录的 `data` 字段。
+     */
+    suspend fun recentSongs(limit: Int = 100): List<Song> {
+        val root = weapi(
+            "/weapi/play-record/song/list",
+            buildJsonObject {
+                put("limit", limit.coerceIn(1, 500))
+                put("csrf_token", "")
+            },
+        )
+        val data = root["data"]
+        val rows = when (data) {
+            is JsonArray -> data.toList()
+            is JsonObject -> data["list"]?.arr().orEmpty()
+            else -> emptyList()
+        }
+        return rows.asSequence()
+            .mapNotNull { row ->
+                val rowObject = row.safeObject() ?: return@mapNotNull null
+                (rowObject["data"] ?: rowObject["song"] ?: rowObject).toSong()
+            }
+            .filter { it.id > 0L }
+            .distinctBy { it.id }
+            .toList()
     }
 
     // ---------------- 登录 ----------------
@@ -872,4 +1403,49 @@ class DirectApi {
 
     private fun JsonElement.toPlaylist(): Playlist? =
         runCatching { json.decodeFromJsonElement(Playlist.serializer(), this) }.getOrNull()
+
+    /**
+     * 解析首页 `HOMEPAGE_BLOCK_MGC_PLAYLIST` 中的雷达卡片。
+     *
+     * 移动端区块不会返回完整歌单对象，而是把 id、标题、封面和播放量
+     * 分散在 `creative` / `resources[0]` 中，因此这里单独映射。
+     */
+    private fun JsonElement.toRadarPlaylist(): Playlist? {
+        val creative = safeObject() ?: return null
+        val resource = creative["resources"]?.arr()?.firstOrNull()?.safeObject()
+        val creativeUi = creative["uiElement"]?.safeObject()
+        val resourceUi = resource?.get("uiElement")?.safeObject()
+        val id = listOfNotNull(
+            creative["creativeId"]?.asLong(),
+            resource?.get("resourceId")?.asLong(),
+            resource?.get("id")?.asLong(),
+        ).firstOrNull { it != null && it > 0L } ?: return null
+        if (id <= 0L) return null
+
+        // 同上：空串不能阻断回退，否则会整张卡被丢弃。
+        // 依次尝试 creative 与 resource 的 mainTitle，取第一个**非空白**值。
+        val ext = resource?.get("resourceExtInfo")?.safeObject()
+        val title = listOfNotNull(
+            creativeUi?.get("mainTitle")?.safeObject()?.get("title")?.str(),
+            resourceUi?.get("mainTitle")?.safeObject()?.get("title")?.str(),
+            // 部分区块只有 resourceExtInfo 里有可读名
+            ext?.get("name")?.str(),
+            resource?.get("name")?.str(),
+        ).firstOrNull { it.isNotBlank() } ?: return null
+
+        val cover = listOfNotNull(
+            creativeUi?.get("image")?.safeObject()?.get("imageUrl")?.str(),
+            resourceUi?.get("image")?.safeObject()?.get("imageUrl")?.str(),
+            ext?.get("coverUrl")?.str(),
+            resource?.get("coverUrl")?.str(),
+        ).firstOrNull { it.isNotBlank() }
+        val playCount = ext?.get("playCount")?.asDouble() ?: 0.0
+
+        return Playlist(
+            id = id,
+            name = title,
+            coverImgUrl = cover?.replaceFirst("http://", "https://"),
+            playCount = playCount,
+        )
+    }
 }

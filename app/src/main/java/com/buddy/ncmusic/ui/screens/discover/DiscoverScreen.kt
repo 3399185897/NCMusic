@@ -1,5 +1,8 @@
 package com.buddy.ncmusic.ui.screens.discover
 
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
@@ -23,12 +26,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
@@ -37,7 +42,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,12 +57,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.buddy.ncmusic.NCMusicApp
+import com.buddy.ncmusic.data.cache.ContentCache
 import com.buddy.ncmusic.data.model.Song
 import com.buddy.ncmusic.ui.components.CoverImage
 import com.buddy.ncmusic.ui.components.Mic
@@ -138,6 +147,19 @@ fun DiscoverScreen(
     // 榜单需并行请求 4 个歌单，加载期间原先是一片空白；补一个加载态
     var ranksLoading by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
+        if (ContentCache.hasAllRankDetails(RANK_DEFS.map { it.first })) {
+            ranks = RANK_DEFS.mapNotNull { (id, fallback) ->
+                ContentCache.rankDetail(id)?.let { playlist ->
+                    RankData(
+                        id = id,
+                        name = playlist.name.ifBlank { fallback },
+                        songs = playlist.tracks.take(RANK_SONG_COUNT),
+                    )
+                }
+            }
+            ranksLoading = false
+            return@LaunchedEffect
+        }
         // 四个榜单并行请求，避免顺序加载造成的长时间等待
         ranks = coroutineScope {
             RANK_DEFS.map { (id, fallback) ->
@@ -147,7 +169,7 @@ fun DiscoverScreen(
                             id = id,
                             name = r.data.name.ifBlank { fallback },
                             songs = r.data.tracks.take(RANK_SONG_COUNT),
-                        )
+                        ).also { ContentCache.storeRankDetail(id, r.data) }
                         is ApiResult.Error -> null
                     }
                 }
@@ -158,185 +180,240 @@ fun DiscoverScreen(
 
     val screenWidth = LocalConfiguration.current.screenWidthDp.dp
 
-    if (query.isNotBlank()) {
-        Column(Modifier.fillMaxSize()) {
-            SearchField(
-                query = query,
-                onQueryChange = searchVm::onQueryChange,
-                onOpenIdentify = onOpenIdentify,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-            // 搜索加载态改用 Expressive 多边形加载指示器 ——
-            // 与下拉刷新、首页加载保持同一套视觉语言。
-            // 原先这里是通栏 LinearProgressIndicator（细长滑块），
-            // 与全局其它加载场景的"变形多边形"风格不一致。
-            //
-            // 外层套一个固定高度的居中容器：指示器是方形动画，
-            // 直接放进 Column 会导致内容区跳动（搜索开始/结束各抖一次）。
-            if (searching) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(72.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    ExpressiveLoadingIndicator(modifier = Modifier.size(40.dp))
-                }
-            }
-            // 三级分支，括号结构与原 if/else 一致：
-            //   失败（可重试） > 确实搜过但无结果 > 结果列表
-            if (searchError != null && !searching) {
-                SearchFailure(
-                    message = searchError!!,
-                    // 网络类失败才给重试；解析错误重试通常无效
-                    canRetry = searchErrorKind != ApiResult.ErrorKind.PARSE,
-                    onRetry = { searchVm.searchNow(query) },
-                )
-            } else if (searched && results.isEmpty() && !searching) {
-                Text(
-                    text = "没有找到相关歌曲",
-                    modifier = Modifier.padding(24.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
-                    ) {
-                    items(results, key = { it.id }) { song ->
-                        SongListItem(
-                            song = song,
-                            onClick = { onPlay(results, results.indexOf(song)) },
-                            onArtistClick = onOpenArtist,
-                        )
-                    }
-                }
-            }
-        }
-        return
+    // ============================================================
+    // 输入框自身的状态
+    //
+    // 用 TextFieldValue 而非 String：需要判断 `composition != null`
+    // 才能区分「正在用拼音组词」与「已经上屏」—— 见下方 onValueChange。
+    // ============================================================
+    var field by remember {
+        mutableStateOf(TextFieldValue(query, selection = TextRange(query.length)))
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
-    ) {
-        item {
-            SearchField(
-                query = query,
-                onQueryChange = searchVm::onQueryChange,
-                onOpenIdentify = onOpenIdentify,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            )
+    // 外部改动 query（点历史 / 热词）时同步到输入框。
+    // 组词期间不覆盖，否则会打断输入法正在组合的拼音。
+    LaunchedEffect(query) {
+        if (field.composition == null && field.text != query) {
+            field = TextFieldValue(query, selection = TextRange(query.length))
         }
+    }
 
-        // 搜索历史（可逐条删除 / 一键清空）
-        if (history.isNotEmpty()) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SectionTitle("搜索历史", modifier = Modifier.weight(1f))
-                    TextButton(onClick = { searchVm.clearHistory() }) { Text("清空") }
+    Column(Modifier.fillMaxSize()) {
+        // ⚠️ 输入框必须是**唯一且位置固定**的实例。
+        //
+        // 此前它分别出现在「空查询」与「有关键词」两个分支里，
+        // 而分支条件正是 `query.isNotBlank()` ——
+        // 用户敲下第一个字符，条件翻转，整个分支被替换，
+        // 输入框随之**销毁重建**：焦点丢失、输入法组词中断。
+        //
+        // 症状与反馈完全吻合：
+        //  · 拼音内联显示（组词文本写进输入框）→ 第一个字母就让
+        //    query 非空 → 分支翻转 → 打不出完整的字
+        //  · 候选词显示在输入法内 → 组词期不写回 query，
+        //    能一次上屏；但空格确认后立刻切到结果分支，
+        //    看起来像「空格后直接搜索」
+        //
+        // 现在输入框提到条件之外，切换内容时不再重建。
+        SearchField(
+            value = field,
+            onValueChange = { nv ->
+                field = nv
+                // 组词中不触发搜索：等上屏后再请求，
+                // 避免拿 "ni" / "nih" 这类半成品拼音去搜
+                if (nv.composition == null && nv.text != query) {
+                    searchVm.onQueryChange(nv.text)
                 }
-            }
-            item {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(history, key = { it }) { keyword ->
-                        InputChip(
-                            selected = false,
-                            onClick = { searchVm.searchNow(keyword) },
-                            label = { Text(keyword) },
-                            trailingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "删除该记录",
-                                    modifier = Modifier
-                                        .size(16.dp)
-                                        .clickable { searchVm.removeHistory(keyword) },
-                                )
-                            },
+            },
+            onSearch = { searchVm.searchNow(field.text) },
+            onClear = {
+                field = TextFieldValue("")
+                searchVm.onQueryChange("")
+            },
+            onOpenIdentify = onOpenIdentify,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+
+        if (query.isNotBlank()) {
+            // ---------- 搜索结果 ----------
+            //
+            // 用 weight(1f) 而非 fillMaxSize()：
+            // 在 Column 内，子项的 maxHeight 是**无界**的，
+            // 而 fillMaxSize() 会把这个无界约束继续传给内部的 LazyColumn ——
+            // 「可垂直滚动的组件被赋予了无限高约束」会直接抛异常。
+            // weight(1f) 让本区占据输入框之外的剩余高度，约束是有界的。
+            Column(Modifier.weight(1f)) {
+                // 搜索结果属于“进行中的内容更新”，使用 MD3 的线性进度条；
+                // 固定 4dp 占位，避免 searching 切换时列表整体上下跳动。
+                Box(Modifier.fillMaxWidth().height(4.dp)) {
+                    if (searching) {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
                         )
                     }
                 }
-            }
-        }
-
-        if (hotWords.isNotEmpty()) {
-            item { SectionTitle("热门搜索") }
-            item {
-                // 自然换行排列，间隔一致（不再按列分组，顺序即数据顺序）
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    hotWords.take(12).forEach { word ->
-                        SuggestionChip(
-                            onClick = { searchVm.searchNow(word) },
-                            label = { Text(word) },
-                        )
-                    }
-                }
-            }
-        }
-
-        item { SectionTitle("排行榜") }
-        item {
-            if (ranksLoading) {
-                // 用与全局加载态一致的 M3 Expressive 指示器，
-                // 避免此处出现"空白等待"或退化为另一种风格的转圈
-                Box(
-                    modifier = Modifier.fillMaxWidth().height(140.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    ExpressiveLoadingIndicator(modifier = Modifier.size(48.dp))
-                }
-            } else {
-                // 卡片宽度 = 屏宽 - 左16 - 右16 - 露出下一张的 32dp。
-                //
-                // 原先取 `screenWidth - 32.dp`（正好一屏），横向滚动时
-                // **看不到下一张的任何边缘**，用户不会意识到可以左右滑。
-                // 留 32dp 露出量后，既有"还有更多"的视觉暗示，
-                // 又保证卡内 10 首歌的信息密度不下降。
-                val cardWidth = (screenWidth - 64.dp).coerceAtLeast(240.dp)
-                val ranksListState = rememberLazyListState()
-
-                LazyRow(
-                    state = ranksListState,
-                    contentPadding = PaddingValues(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    // 吸附翻页：松手后自动对齐到卡片边界，
-                    // 避免停在"半张卡"的尴尬位置（原先无吸附，停止位置随意）
-                    flingBehavior = rememberSnapFlingBehavior(ranksListState),
-                ) {
-                    items(ranks, key = { it.id }) { rank ->
-                        RankCard(
-                            rank = rank,
-                            pageWidth = cardWidth,
-                            onPlay = onPlay,
-                            onOpenPlaylist = onOpenPlaylist,
-                        )
-                    }
-                }
-
-                // 位置反馈：告诉用户当前在第几张 / 共几张
-                if (ranks.size > 1) {
-                    val current by remember {
-                        derivedStateOf {
-                            (ranksListState.firstVisibleItemIndex + 1).coerceIn(1, ranks.size)
-                        }
-                    }
+                // 三级分支，括号结构与原 if/else 一致：
+                //   失败（可重试） > 确实搜过但无结果 > 结果列表
+                if (searchError != null && !searching) {
+                    SearchFailure(
+                        message = searchError!!,
+                        // 网络类失败才给重试；解析错误重试通常无效
+                        canRetry = searchErrorKind != ApiResult.ErrorKind.PARSE,
+                        onRetry = { searchVm.searchNow(query) },
+                    )
+                } else if (searched && results.isEmpty() && !searching) {
                     Text(
-                        text = "$current / ${ranks.size}",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp, end = 20.dp),
-                        textAlign = TextAlign.End,
-                        style = MaterialTheme.typography.labelSmall,
+                        text = "没有找到相关歌曲",
+                        modifier = Modifier.padding(24.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                } else {
+                    LazyColumn(
+                            // 同上：外层已是有界约束，这里用 weight 占满剩余高度
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+                        ) {
+                        itemsIndexed(results, key = { _, song -> song.id }) { index, song ->
+                            SongListItem(
+                                song = song,
+                                onClick = { onPlay(results, index) },
+                                onArtistClick = onOpenArtist,
+                            )
+                        }
+                    }
                 }
+            }
+        } else {
+            // ---------- 发现首页 ----------
+            LazyColumn(
+                // 同上：Column 的直接子项必须用 weight 拿到有界的高度约束
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
+            ) {
+            // 搜索历史（可逐条删除 / 一键清空）
+            if (history.isNotEmpty()) {
+                item {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SectionTitle("搜索历史", modifier = Modifier.weight(1f))
+                        TextButton(onClick = { searchVm.clearHistory() }) { Text("清空") }
+                    }
+                }
+                item {
+                    LazyRow(
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(history, key = { it }) { keyword ->
+                            InputChip(
+                                selected = false,
+                                onClick = { searchVm.searchNow(keyword) },
+                                label = { Text(keyword) },
+                                trailingIcon = {
+                                    // ⚠️ 这里**不能**用 48dp。
+                                    //
+                                    // InputChip 的最小高度只有 32dp，把 48dp 的
+                                    // 触摸目标塞进 trailingIcon 槽，整颗 chip 会被
+                                    // 撑到 60dp 左右 —— 视觉上就是"搜索历史的框太大"。
+                                    // 图标槽按 MD3 规范取 16dp 图标 + 24dp 命中区，
+                                    // 与 chip 自身高度协调。
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .clickable { searchVm.removeHistory(keyword) },
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "删除该记录",
+                                            modifier = Modifier.size(16.dp),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (hotWords.isNotEmpty()) {
+                item { SectionTitle("热门搜索") }
+                item {
+                    // 自然换行排列，间隔一致（不再按列分组，顺序即数据顺序）
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        hotWords.take(12).forEach { word ->
+                            SuggestionChip(
+                                onClick = { searchVm.searchNow(word) },
+                                label = { Text(word) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            item { SectionTitle("排行榜") }
+            item {
+                if (ranksLoading) {
+                    // 用与全局加载态一致的 M3 Expressive 指示器，
+                    // 避免此处出现"空白等待"或退化为另一种风格的转圈
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(140.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        ExpressiveLoadingIndicator(modifier = Modifier.size(48.dp))
+                    }
+                } else {
+                    // 卡片宽度 = 屏宽 - 左16 - 右16 - 露出下一张的 32dp。
+                    //
+                    // 原先取 `screenWidth - 32.dp`（正好一屏），横向滚动时
+                    // **看不到下一张的任何边缘**，用户不会意识到可以左右滑。
+                    // 留 32dp 露出量后，既有"还有更多"的视觉暗示，
+                    // 又保证卡内 10 首歌的信息密度不下降。
+                    val cardWidth = (screenWidth - 64.dp).coerceAtLeast(240.dp)
+                    val ranksListState = rememberLazyListState()
+
+                    LazyRow(
+                        state = ranksListState,
+                        contentPadding = PaddingValues(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        // 吸附翻页：松手后自动对齐到卡片边界，
+                        // 避免停在"半张卡"的尴尬位置（原先无吸附，停止位置随意）
+                        flingBehavior = rememberSnapFlingBehavior(ranksListState),
+                    ) {
+                        items(ranks, key = { it.id }) { rank ->
+                            RankCard(
+                                rank = rank,
+                                pageWidth = cardWidth,
+                                onPlay = onPlay,
+                                onOpenPlaylist = onOpenPlaylist,
+                            )
+                        }
+                    }
+
+                    // 位置反馈：告诉用户当前在第几张 / 共几张
+                    if (ranks.size > 1) {
+                        val current by remember {
+                            derivedStateOf {
+                                (ranksListState.firstVisibleItemIndex + 1).coerceIn(1, ranks.size)
+                            }
+                        }
+                        Text(
+                            text = "$current / ${ranks.size}",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp, end = 20.dp),
+                            textAlign = TextAlign.End,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
             }
         }
     }
@@ -350,17 +427,20 @@ private fun RankCard(
     onPlay: (List<Song>, Int) -> Unit,
     onOpenPlaylist: (Long) -> Unit,
 ) {
-    Column(
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier
             .width(pageWidth)
-            .padding(end = 8.dp)
-            .clip(AppShapes.of(16.dp)),
+            .padding(end = 8.dp),
     ) {
+        Column(Modifier.padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = rank.name,
                 modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
                 // 榜单名长短不一（"云音乐飙升榜" vs "云音乐中文说唱榜"），
                 // 不限制行数会与右侧「查看更多」争夺宽度并挤压布局。
@@ -411,29 +491,47 @@ private fun RankCard(
                 }
             }
         }
+        }
     }
 }
 
 /** 搜索框：听歌识曲按钮内嵌右侧，搜索框整体居中占满宽度 */
 @Composable
 private fun SearchField(
-    query: String,
-    onQueryChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    onSearch: () -> Unit,
+    onClear: () -> Unit,
     onOpenIdentify: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
+        value = value,
+        onValueChange = onValueChange,
         modifier = modifier.fillMaxWidth(),
         placeholder = { Text("搜索歌曲") },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = {
-            IconButton(onClick = onOpenIdentify) {
-                Icon(Icons.Filled.Mic, contentDescription = "听歌识曲")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (value.text.isNotEmpty()) {
+                    IconButton(onClick = onClear) {
+                        Icon(Icons.Filled.Clear, contentDescription = "清空搜索")
+                    }
+                }
+                IconButton(onClick = onOpenIdentify) {
+                    Icon(Icons.Filled.Mic, contentDescription = "听歌识曲")
+                }
             }
         },
-        shape = AppShapes.of(28.dp),
+        shape = MaterialTheme.shapes.extraLarge,
         singleLine = true,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onSearch() }),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+        ),
     )
 }

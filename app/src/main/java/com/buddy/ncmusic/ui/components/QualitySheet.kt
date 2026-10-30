@@ -30,7 +30,6 @@ import androidx.compose.ui.unit.dp
 import com.buddy.ncmusic.data.model.Song
 import com.buddy.ncmusic.ui.theme.AppShapes
 import com.buddy.ncmusic.util.AudioQuality
-import com.buddy.ncmusic.util.audioSpecText
 import com.buddy.ncmusic.util.VipTier
 
 /**
@@ -71,7 +70,6 @@ fun QualitySheetContent(
      */
     accentColor: androidx.compose.ui.graphics.Color? = null,
 ) {
-    val maxBr = song?.maxBr ?: 0
     // 取色优先，未取到则回退主题色
     val accent = accentColor ?: MaterialTheme.colorScheme.primary
 
@@ -90,7 +88,7 @@ fun QualitySheetContent(
             // 官方此处有一个「?」说明入口；本地没有对应帮助页，
             // 用一句规格说明替代，避免放一个点了没反应的图标
             Text(
-                text = song?.audioSpecHint().orEmpty(),
+                text = audioSpecHint(currentLevel),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -102,10 +100,13 @@ fun QualitySheetContent(
 
         // ---------- 档位列表（高 -> 低）----------
         AudioQuality.visibleDescending.forEach { q ->
+            // 全量列出档位，不做预判禁用：
+            // 音质是否可得由服务端按账号权限裁决（失败走降级链并提示）。
+            // 歌曲对象的 hr / maxbr 字段在列表接口里经常缺失，
+            // 据此禁用曾导致 VIP 用户也选不了高清臻音。
             QualityRow(
                 quality = q,
                 selected = q.level == currentLevel,
-                enabled = AudioQuality.availableFor(q.level, maxBr),
                 accent = accent,
                 onClick = { onPick(q) },
             )
@@ -118,14 +119,12 @@ fun QualitySheetContent(
 private fun QualityRow(
     quality: AudioQuality,
     selected: Boolean,
-    enabled: Boolean,
     /** 封面取色（已回退为具体颜色，不会是 null） */
     accent: androidx.compose.ui.graphics.Color,
     onClick: () -> Unit,
 ) {
-    // 未选中的可用项不加底色（靠留白分隔），选中项用**封面取色**淡染 ——
+    // 未选中项不加底色（靠留白分隔），选中项用**封面取色**淡染 ——
     // 原来是给所有项都铺一层容器色，再给选中项叠主题色，层次容易糊在一起
-    val alpha = if (enabled) 1f else 0.38f
     val onContainer = MaterialTheme.colorScheme.onSurface
 
     Row(
@@ -137,7 +136,7 @@ private fun QualityRow(
                 if (selected) accent.copy(alpha = 0.16f)
                 else androidx.compose.ui.graphics.Color.Transparent,
             )
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -146,9 +145,7 @@ private fun QualityRow(
             modifier = Modifier
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(
-                    MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = alpha),
-                ),
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -156,8 +153,7 @@ private fun QualityRow(
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
                 // 选中项让短标识也带上取色，进一步呼应封面
-                color = if (selected) accent.copy(alpha = alpha)
-                else onContainer.copy(alpha = alpha * 0.85f),
+                color = if (selected) accent else onContainer.copy(alpha = 0.85f),
             )
         }
 
@@ -170,7 +166,7 @@ private fun QualityRow(
                     text = quality.label,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
-                    color = onContainer.copy(alpha = alpha),
+                    color = onContainer,
                     maxLines = 1,
                 )
                 if (quality.englishName.isNotBlank()) {
@@ -178,7 +174,7 @@ private fun QualityRow(
                     Text(
                         text = quality.englishName,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false),
@@ -186,7 +182,7 @@ private fun QualityRow(
                 }
                 if (quality.vip != VipTier.NONE) {
                     Spacer(Modifier.width(6.dp))
-                    VipBadge(quality.vip, alpha)
+                    VipBadge(quality.vip)
                 }
             }
 
@@ -199,21 +195,12 @@ private fun QualityRow(
                 Text(
                     text = sub,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
 
-            // 该曲目拿不到该档时的说明 —— 避免用户以为是 App 出错
-            if (!enabled) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "当前歌曲不提供此音质",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
-                )
-            }
         }
 
         // ---------- 选中标记 ----------
@@ -239,16 +226,16 @@ private fun QualityRow(
     }
 }
 
-/** VIP / SVIP 徽标 */
+/** VIP / SVIP 徽标（播放器音质面板与设置页共用） */
 @Composable
-private fun VipBadge(tier: VipTier, alpha: Float = 1f) {
+internal fun VipBadge(tier: VipTier) {
     Box(
         modifier = Modifier
             // 用描边而非实心：实心徽标在彩色卡片上会与选中态的底色打架，
             // 描边既保留了"会员专属"的提示，又不抢主信息的对比度
             .border(
                 width = 1.dp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha * 0.5f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 shape = AppShapes.of(6.dp),
             )
             .padding(horizontal = 4.dp, vertical = 1.dp),
@@ -256,7 +243,7 @@ private fun VipBadge(tier: VipTier, alpha: Float = 1f) {
         Text(
             text = tier.label,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = FontWeight.Medium,
         )
     }
@@ -274,6 +261,6 @@ private fun androidx.compose.ui.graphics.Color.contrastForeground():
     if (luminance() > 0.5f) androidx.compose.ui.graphics.Color.Black
     else androidx.compose.ui.graphics.Color.White
 
-/** 标题右侧的一句规格提示 */
-private fun Song.audioSpecHint(): String =
-    audioSpecText()?.let { "本曲最高 $it" }.orEmpty()
+/** 标题右侧的规格提示：跟随**当前所选音质**（官方客户端同款口径） */
+private fun audioSpecHint(level: String): String =
+    AudioQuality.of(level)?.let { "当前 ${it.label} · ${it.specText}" }.orEmpty()

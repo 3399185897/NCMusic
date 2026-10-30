@@ -1,8 +1,10 @@
 package com.buddy.ncmusic.ui.screens.settings
 
+import com.buddy.ncmusic.util.VipTier
+import com.buddy.ncmusic.ui.components.VipBadge
+import androidx.compose.ui.text.style.TextOverflow
 import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.ui.draw.alpha
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -185,36 +187,34 @@ class SettingsViewModel : ViewModel() {
         }
     }
     /**
-     * 深色模式 / 自定义主题色 / 莫奈取色 —— 三者互斥：
-     * - 开「深色模式」→ 要固定深色配色，关闭莫奈取色并清空自定义色
-     * - 开「跟随系统」→ 保留自动取色能力
-     * - 关「深色模式」→ 回退到浅色（light）
+     * 深色模式**独立**，不再联动取色或自定义色。
+     *
+     * 深色只决定明暗，色调来源（莫奈 / 自定义）由下面两个开关各自决定 ——
+     * 两者正交，可以任意组合。此前"开深色就关取色、清自定义色"的写法
+     * 会让用户觉得深色开关把别的设置一起清掉了。
      */
     fun setThemeMode(v: String) {
-        viewModelScope.launch {
-            prefs.setThemeMode(v)
-            if (v == "dark" || v == "light") {
-                prefs.setDynamicColor(false)
-                prefs.setCustomColor(0L)
-            }
-        }
+        viewModelScope.launch { prefs.setThemeMode(v) }
     }
 
+    /**
+     * 莫奈取色。开启时自动清空自定义色（否则两套色源冲突）。
+     */
     fun setDynamicColor(v: Boolean) {
         viewModelScope.launch {
             prefs.setDynamicColor(v)
-            // 开启莫奈取色 → 清空自定义色，并把深浅模式交还系统
-            if (v) {
-                prefs.setCustomColor(0L)
-                prefs.setThemeMode("system")
-            }
+            // 开启莫奈取色 → 自动关闭自定义色（不触碰深色模式）
+            if (v) prefs.setCustomColor(0L)
         }
     }
 
+    /**
+     * 自定义主题色。选中时自动关闭莫奈取色（两套色源只保留一个）。
+     */
     fun setCustomColor(v: Long) {
         viewModelScope.launch {
             prefs.setCustomColor(v)
-            // 选择自定义色 → 关闭莫奈取色
+            // 选择自定义色 → 自动关闭莫奈取色
             if (v != 0L) prefs.setDynamicColor(false)
         }
     }
@@ -301,6 +301,10 @@ class SettingsViewModel : ViewModel() {
         viewModelScope.launch { prefs.setPlayerColorEnabled(enabled) }
     }
 
+    fun setBottomBarRounded(enabled: Boolean) {
+        viewModelScope.launch { prefs.setBottomBarRounded(enabled) }
+    }
+
     fun setHomeShowRadar(show: Boolean) {
         viewModelScope.launch { prefs.setHomeShowRadar(show) }
     }
@@ -350,21 +354,9 @@ const val CACHE_MIN_MB = 1024
 /** 最大缓存上限（MB）：10 GB —— 与滑块右端、精确输入上限一致 */
 const val CACHE_MAX_MB = 10240
 
-/**
- * 可选的音质档位。
- *
- * ⚠️ 这里**不再自行维护一份列表**。
- *
- * 此前设置页与播放器各写一份档位列表，且内容已经漂移：
- * 设置页写「极高（320k）」「无损（FLAC）」「Hi-Res」，
- * 播放器写「极高」「无损」「高清臻音」—— 同一个档位两种叫法。
- *
- * 现统一取自 [AudioQuality]，与播放器音质面板、下载音质选择器**同源**。
- * 档位与规格文案均与官方一致（无损为 `最高48kHz/16bit`）。
- * 「较高」官方不在列表中展示，此处同样不出现。
- */
-private val qualityOptions: List<Pair<String, String>> =
-    AudioQuality.visibleDescending.map { it.level to "${it.label}（${it.specText}）" }
+// 音质档位直接取自 [AudioQuality]，与播放器音质面板、下载选择器同源。
+// 曾经这里另维护一份「名称（规格）」的字符串表，与播放器文案漂移；
+// 现在统一由 QualityOptionRow 渲染，含短标识 / 英文名 / VIP / 描述 / 规格 / 码率。
 
 private val startPageOptions = listOf(
     "home" to "推荐",
@@ -565,16 +557,12 @@ fun SettingsScreen(
                         }
                     }
                 }
-                // 当前是否处于深色（含「跟随系统」且系统为深色）
-                val darkOn = state.themeMode == "dark" ||
-                    (state.themeMode == "system" && isSystemInDarkTheme())
-
-                // 莫奈取色的禁用条件（互斥关系收敛为两条）：
-                //   1) 深色模式开启 —— 深色固定灰阶，取色无意义
-                //   2) 已选自定义主题色 —— 两者本就冲突
-                val dynamicDisabled = darkOn || state.customColor != 0L
+                // 深色只决定明暗，取色只决定色调来源 —— 两者**正交**，互不禁用。
+                //
+                // 取色与自定义色的冲突改由「选中即自动切换」处理
+                // （见 setDynamicColor / setCustomColor），因此这里不再禁用任何控件：
+                // 禁用会让人发现"开关点不动"，而自动切换的语义是"点了就生效"。
                 SwitchRow(
-                    enabled = !dynamicDisabled,
                     title = "莫奈动态取色",
                     subtitle = "跟随系统壁纸取色（Android 12+）",
                     checked = state.dynamicColor,
@@ -591,40 +579,45 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     presetColors.forEach { (argb, _) ->
-                        // 深色下主题固定灰阶，自定义色不生效 —— 直接禁掉点击并降透明度，
-                        // 避免"点了没反应"的困惑
-                        val colorEnabled = !darkOn
-                        val selected = state.customColor == argb && colorEnabled
+                        // 深色下自定义色同样生效（深色变体由 Theme 计算），故不再禁用
+                        val selected = state.customColor == argb
                         // 记录该色块在 root 中的中心坐标，用于颜色扩散动画起点
                         var centerInRoot by remember { mutableStateOf(Offset.Zero) }
                         Box(
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(48.dp)
                                 .onGloballyPositioned { coords ->
                                     centerInRoot = coords.positionInRoot() +
                                         Offset(coords.size.width / 2f, coords.size.height / 2f)
                                 }
-                                .background(Color(argb), CircleShape)
-                                // 只在选中时挂 border：写成 width = 0.dp + Transparent
-                                // 在某些版本/合成路径下仍会描出一圈浅边，看起来像"白色阴影"
-                                .then(
-                                    if (selected) {
-                                        Modifier.border(
-                                            width = 3.dp,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            shape = CircleShape,
-                                        )
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                                .alpha(if (colorEnabled) 1f else 0.35f)
-                                .clickable(enabled = colorEnabled) {
+                                .clickable {
                                     // 从点击处扩散新颜色
                                     ColorRevealState.launch(centerInRoot, Color(argb))
                                     vm.setCustomColor(if (selected) 0L else argb)
                                 },
-                        )
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .background(Color(argb), CircleShape)
+                                    // 只在选中时挂 border：写成 width = 0.dp + Transparent
+                                    // 在某些版本/合成路径下仍会描出一圈浅边，看起来像"白色阴影"
+                                    .then(
+                                        if (selected) {
+                                            Modifier.border(
+                                                width = 3.dp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                shape = CircleShape,
+                                            )
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                                    // 始终不透明：不再有"深色下禁用"的灰色态
+                                    .alpha(1f),
+                            )
+                        }
                     }
                 }
                 Text(
@@ -640,6 +633,12 @@ fun SettingsScreen(
                     checked = state.playerColorEnabled,
                     onCheckedChange = vm::setPlayerColorEnabled,
                 )
+                SwitchRow(
+                    title = "底栏圆弧",
+                    subtitle = "开启时底栏顶部为圆弧，关闭后切换为平角",
+                    checked = state.bottomBarRounded,
+                    onCheckedChange = vm::setBottomBarRounded,
+                )
 
             // ---------- 主页组件 ----------
             // 与「外观」同组：这两个开关改变的是主页的呈现内容
@@ -650,7 +649,7 @@ fun SettingsScreen(
             ) {
                 SwitchRow(
                     title = "雷达歌单",
-                    subtitle = "私人雷达 + 推荐歌单拼接的正方形歌单墙",
+                    subtitle = "官方账号级雷达，固定精选 7 张并随账号变化",
                     checked = state.homeShowRadar,
                     onCheckedChange = vm::setHomeShowRadar,
                 )
@@ -944,41 +943,47 @@ fun SettingsScreen(
                         Box(
                             modifier = Modifier
                                 .padding(end = 6.dp)
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .then(
-                                    if (selected) {
-                                        Modifier.border(
-                                            width = 2.dp,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            shape = CircleShape,
-                                        )
-                                    } else {
-                                        Modifier
-                                    },
-                                )
+                                .size(48.dp)
                                 .clickable { vm.setLyricColor(argb) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(26.dp)
+                                    .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(Color(argb))
                                     .then(
-                                        // 未选中时给一层细描边：
-                                        // 白色圆点在浅色背景上否则会"消失"
                                         if (selected) {
-                                            Modifier
-                                        } else {
                                             Modifier.border(
-                                                width = 1.dp,
-                                                color = MaterialTheme.colorScheme.outlineVariant,
+                                                width = 2.dp,
+                                                color = MaterialTheme.colorScheme.onSurface,
                                                 shape = CircleShape,
                                             )
+                                        } else {
+                                            Modifier
                                         },
                                     ),
-                            )
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(argb))
+                                        .then(
+                                            // 未选中时给一层细描边：
+                                            // 白色圆点在浅色背景上否则会"消失"
+                                            if (selected) {
+                                                Modifier
+                                            } else {
+                                                Modifier.border(
+                                                    width = 1.dp,
+                                                    color = MaterialTheme.colorScheme.outlineVariant,
+                                                    shape = CircleShape,
+                                                )
+                                            },
+                                        ),
+                                )
+                            }
                         }
                     }
                 }
@@ -1447,7 +1452,118 @@ private fun QualitySubGroup(
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.primary,
     )
-    OptionGroup(qualityOptions, selected, onSelect)
+    QualityOptionList(selected = selected, onSelect = onSelect)
+}
+
+/**
+ * 音质选项列表 —— 视觉语言与播放器音质面板（QualitySheet）保持一致。
+ */
+@Composable
+private fun QualityOptionList(
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth()) {
+        AudioQuality.visibleDescending.forEach { q ->
+            QualityOptionRow(
+                quality = q,
+                selected = q.level == selected,
+                onClick = { onSelect(q.level) },
+            )
+        }
+        Spacer(Modifier.size(4.dp))
+    }
+}
+
+/**
+ * 单个音质选项。
+ *
+ * 与播放器面板（`QualitySheet.QualityRow`）同一套结构：
+ * **短标识圆形图标 + 名称 / 英文名 / VIP 徽标 + 描述 / 规格 / 码率**，
+ * 右侧是单选圆点（设置页是"偏好"，需要明确的单选语义）。
+ *
+ * 比播放器多显示一项**码率**：设置页是在挑选"上限"，
+ * 码率是用户判断档位高低最直接的依据。
+ */
+@Composable
+private fun QualityOptionRow(
+    quality: AudioQuality,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 短标识（与播放器同尺寸 40dp，保证两处观感一致）
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = quality.shortLabel,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+            )
+        }
+
+        Spacer(Modifier.width(14.dp))
+
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = quality.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+                if (quality.englishName.isNotBlank()) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = quality.englishName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                if (quality.vip != VipTier.NONE) {
+                    Spacer(Modifier.width(6.dp))
+                    VipBadge(quality.vip)
+                }
+            }
+
+            // 第二行：描述，规格，码率（码率是本页额外提供的信息）
+            val detail = buildList {
+                if (quality.description.isNotBlank()) add(quality.description)
+                if (quality.specText.isNotBlank()) add(quality.specText)
+                if (quality.kbps > 0) add("${quality.kbps} kbps")
+            }.joinToString("，")
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+        RadioButton(selected = selected, onClick = onClick)
+    }
 }
 
 private fun qualityLabelOf(q: String): String =

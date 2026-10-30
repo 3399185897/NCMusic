@@ -5,6 +5,7 @@ import kotlinx.coroutines.coroutineScope
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.buddy.ncmusic.NCMusicApp
+import com.buddy.ncmusic.data.cache.ContentCache
 import com.buddy.ncmusic.data.model.Playlist
 import com.buddy.ncmusic.data.model.Song
 import com.buddy.ncmusic.util.ApiResult
@@ -12,6 +13,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -49,17 +53,17 @@ class HomeViewModel : ViewModel() {
 
     private val repo get() = NCMusicApp.instance.musicRepository
 
-    private val _dailySongs = MutableStateFlow<List<Song>>(emptyList())
+    private val _dailySongs = MutableStateFlow(ContentCache.dailySongs.orEmpty())
     val dailySongs: StateFlow<List<Song>> = _dailySongs.asStateFlow()
 
-    private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
+    private val _playlists = MutableStateFlow(ContentCache.personalizedPlaylists.orEmpty())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
 
     // 初值直接取全局缓存：即使 ViewModel 被重建，界面也能立刻显示已有榜单
-    private val _toplist = MutableStateFlow(ToplistCache.data)
+    private val _toplist = MutableStateFlow(ContentCache.toplist ?: ToplistCache.data)
     val toplist: StateFlow<List<Playlist>> = _toplist.asStateFlow()
 
-    private val _radarPlaylists = MutableStateFlow<List<Playlist>>(emptyList())
+    private val _radarPlaylists = MutableStateFlow(ContentCache.radarPlaylists.orEmpty())
     val radarPlaylists: StateFlow<List<Playlist>> = _radarPlaylists.asStateFlow()
 
     /** 下拉刷新中（供官方 PullToRefresh 组件绑定） */
@@ -87,11 +91,45 @@ class HomeViewModel : ViewModel() {
 
     init {
         load()
-        // 监听登录态：登录成功后自动重新加载每日推荐
+        // 监听账号身份变化：登录、退出或切换账号后，个性化区块必须立即
+        // 换用新账号的数据，不能继续展示上一位用户的内容。
         viewModelScope.launch {
-            NCMusicApp.instance.userPreferences.userStateFlow.collectLatest { state ->
-                if (state.isLoggedIn) loadDaily()
-            }
+            NCMusicApp.instance.userPreferences.userStateFlow
+                .map { it.isLoggedIn to it.userId }
+                .distinctUntilChanged()
+                .drop(1) // 首次状态由上面的 load() 负责
+                .collectLatest { (isLoggedIn, _) ->
+                    if (isLoggedIn) {
+                        // 立即清掉上一位账号的内存数据，避免新内容返回前仍短暂
+                        // 展示旧账号的每日推荐、推荐歌单和雷达卡片。
+                        _dailySongs.value = emptyList()
+                        _playlists.value = emptyList()
+                        _radarPlaylists.value = emptyList()
+                        _sectionState.update {
+                            it.copy(
+                                daily = SectionStatus.Loading,
+                                playlists = SectionStatus.Loading,
+                                radar = SectionStatus.Loading,
+                            )
+                        }
+                        coroutineScope {
+                            launch { loadDaily(force = true) }
+                            launch { loadPlaylists(force = true) }
+                            launch { loadRadar(force = true) }
+                        }
+                    } else {
+                        _dailySongs.value = emptyList()
+                        _playlists.value = emptyList()
+                        _radarPlaylists.value = emptyList()
+                        _sectionState.update {
+                            it.copy(
+                                daily = SectionStatus.Empty,
+                                playlists = SectionStatus.Empty,
+                                radar = SectionStatus.Empty,
+                            )
+                        }
+                    }
+                }
         }
     }
 
@@ -100,31 +138,22 @@ class HomeViewModel : ViewModel() {
             _loading.value = true
             _error.value = null
             _sectionState.value = HomeSectionState()
-            try {
-                // ⚠️ 用 coroutineScope 把子任务**全部等完**再收 loading。
-                //
-                // 原先写的是 `launch { ... }` —— launch 是异步的、不返回结果，
-                // 于是 `_loading.value = false` 会在子请求还在飞的时候就执行，
-                // 表现为「首页瞬间结束加载 → 内容空白一两秒后突然出现」。
-                //
-                // coroutineScope 会挂起直到其内部所有子协程完成，语义上正是所需。
-                coroutineScope {
-                    launch { loadPlaylists() }
-                    launch { loadToplist() }
-                    launch { loadRadar() }
-                    loadDaily()
-                }
-            } finally {
-                // try/finally 保证**任何路径**都会收掉加载态：
-                //  · 正常完成
-                //  · 子请求抛异常（如未预期的运行时异常）
-                //  · 协程被取消（页面销毁 / 重复触发 refresh）
-                //
-                // 原先没有 finally —— 任一异常都会让首页**永久停在加载转圈**，
-                // 只能杀进程恢复。CancellationException 仍会向上传播（不吞掉），
-                // finally 在其之前执行。
-                _loading.value = false
+
+            // ⚠️ 关键修正：必须用 coroutineScope 把子任务**全部等完**再收 loading。
+            //
+            // 原先写的是 `launch { ... }` —— launch 是异步的、不返回结果，
+            // 于是 `_loading.value = false` 会在子请求还在飞的时候就执行，
+            // 表现为「首页瞬间结束加载 → 内容空白一两秒后突然出现」。
+            //
+            // coroutineScope 会挂起直到其内部所有子协程完成，语义上正是所需。
+            coroutineScope {
+                launch { loadPlaylists() }
+                launch { loadToplist() }
+                launch { loadRadar() }
+                loadDaily()
             }
+
+            _loading.value = false
         }
     }
 
@@ -134,15 +163,15 @@ class HomeViewModel : ViewModel() {
             when (section) {
                 HomeSection.DAILY -> {
                     _sectionState.update { it.copy(daily = SectionStatus.Loading) }
-                    loadDaily()
+                    loadDaily(force = true)
                 }
                 HomeSection.PLAYLISTS -> {
                     _sectionState.update { it.copy(playlists = SectionStatus.Loading) }
-                    loadPlaylists()
+                    loadPlaylists(force = true)
                 }
                 HomeSection.RADAR -> {
                     _sectionState.update { it.copy(radar = SectionStatus.Loading) }
-                    loadRadar()
+                    loadRadar(force = true)
                 }
                 HomeSection.TOPLIST -> {
                     _sectionState.update { it.copy(toplist = SectionStatus.Loading) }
@@ -152,11 +181,25 @@ class HomeViewModel : ViewModel() {
         }
     }
 
-    private suspend fun loadRadar() {
-        when (val r = repo.radarPlaylists()) {
-            is ApiResult.Success -> {
-                val data = r.data
+    private suspend fun loadRadar(force: Boolean = false) {
+        if (!force && ContentCache.isFresh()) {
+            ContentCache.radarPlaylists?.let { data ->
                 _radarPlaylists.value = data
+                _sectionState.update {
+                    it.copy(radar = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
+                }
+                return
+            }
+        }
+        when (val r = repo.radarPlaylists(limit = 7, refresh = force)) {
+            is ApiResult.Success -> {
+                val data = r.data.distinctBy { it.id }.take(7)
+                _radarPlaylists.value = data
+                ContentCache.storeRadar(data)
+                // 反向去重：若推荐歌单先返回，这里把与雷达重复的移除
+                if (_playlists.value.isNotEmpty()) {
+                    _playlists.value = _playlists.value.filter { it.id !in data.map { x -> x.id }.toSet() }
+                }
                 _sectionState.update {
                     it.copy(radar = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
                 }
@@ -182,27 +225,38 @@ class HomeViewModel : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             _refreshing.value = true
-            try {
-                // 与 load() 同理：必须等全部完成再收起刷新指示器，
-                // 否则转圈停了、内容却还在陆续到位。
-                coroutineScope {
-                    launch { loadPlaylists() }
-                    launch { loadRadar() }
-                    loadDaily()
-                }
-            } finally {
-                // 同 load()：异常/取消路径也必须收起指示器，
-                // 否则下拉刷新会一直转，且无法再次触发。
-                _refreshing.value = false
+            // 与 load() 同理：必须等全部完成再收起刷新指示器，
+            // 否则转圈停了、内容却还在陆续到位。
+            coroutineScope {
+                launch { loadPlaylists(force = true) }
+                launch { loadRadar(force = true) }
+                loadDaily(force = true)
             }
+            _refreshing.value = false
         }
     }
 
-    private suspend fun loadPlaylists() {
-        when (val r = repo.personalizedPlaylists()) {
-            is ApiResult.Success -> {
-                val data = r.data
+    private suspend fun loadPlaylists(force: Boolean = false) {
+        if (!force && ContentCache.isFresh()) {
+            ContentCache.personalizedPlaylists?.let { data ->
                 _playlists.value = data
+                _sectionState.update {
+                    it.copy(
+                        playlists = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready,
+                    )
+                }
+                return
+            }
+        }
+        when (val r = repo.recommendPlaylists()) {
+            is ApiResult.Success -> {
+                // 与雷达区块去重：官方客户端里这两个区块都来自账号口味，
+                // 数据源（每日推荐歌单）相同，重复展示没有信息量。
+                // 雷达先加载完成时这里过滤；反之由 loadRadar 末尾再做一次。
+                val radarIds = _radarPlaylists.value.map { it.id }.toSet()
+                val data = r.data.filter { it.id !in radarIds }
+                _playlists.value = data
+                ContentCache.storePersonalized(data)
                 _sectionState.update {
                     it.copy(
                         playlists = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready,
@@ -223,6 +277,19 @@ class HomeViewModel : ViewModel() {
     }
 
     private suspend fun loadToplist(force: Boolean = false) {
+        if (!force && ContentCache.isFresh()) {
+            ContentCache.toplist?.let { data ->
+                _toplist.value = data
+                ToplistCache.data = data
+                ToplistCache.loaded = true
+                _sectionState.update {
+                    it.copy(
+                        toplist = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready,
+                    )
+                }
+                return
+            }
+        }
         // 命中全局缓存：立即回填并返回，不发起请求、不产生等待
         if (!force && ToplistCache.hasData) {
             if (_toplist.value.isEmpty()) _toplist.value = ToplistCache.data
@@ -231,6 +298,7 @@ class HomeViewModel : ViewModel() {
         when (val r = repo.toplist()) {
             is ApiResult.Success -> {
                 _toplist.value = r.data
+                ContentCache.storeToplist(r.data)
                 ToplistCache.data = r.data
                 ToplistCache.loaded = true
                 _sectionState.update {
@@ -252,11 +320,21 @@ class HomeViewModel : ViewModel() {
     }
 
     /** 每日推荐需登录，未登录时静默失败 */
-    private suspend fun loadDaily() {
+    private suspend fun loadDaily(force: Boolean = false) {
+        if (!force && ContentCache.isFresh()) {
+            ContentCache.dailySongs?.let { data ->
+                _dailySongs.value = data
+                _sectionState.update {
+                    it.copy(daily = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
+                }
+                return
+            }
+        }
         when (val r = repo.recommendSongs()) {
             is ApiResult.Success -> {
                 val data = r.data
                 _dailySongs.value = data
+                ContentCache.storeDaily(data)
                 _sectionState.update {
                     it.copy(daily = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
                 }

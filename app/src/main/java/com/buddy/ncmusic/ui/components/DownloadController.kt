@@ -4,10 +4,14 @@ import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.data.model.Song
 import com.buddy.ncmusic.util.ApiResult
 import com.buddy.ncmusic.util.AudioQuality
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -29,6 +33,16 @@ import kotlinx.coroutines.launch
  * 此时界面应显示"不确定进度"的样式，而不是画一条 0% 的假进度条。
  */
 object DownloadController {
+
+    /**
+     * 下载任务必须由应用级作用域持有，而不能复用对话框/页面的
+     * `rememberCoroutineScope()`。
+     *
+     * 原实现把页面作用域传进来：用户发起下载后关闭详情页，页面离开组合，
+     * 下载协程被取消，但全局状态仍停在 `running`。此后所有新下载都会被
+     * `if (_state.value.running) return` 拦截，必须杀进程才能恢复。
+     */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
      * 一次下载任务的状态。
@@ -61,26 +75,40 @@ object DownloadController {
      * 若已有任务在跑，**直接忽略**本次请求 —— 避免并发下载同一首歌
      * 造成两份临时文件与目标文件竞争。
      */
-    fun download(song: Song, quality: String, scope: CoroutineScope) {
+    fun download(song: Song, quality: String) {
         if (_state.value.running) return
 
         val label = AudioQuality.of(quality)?.label ?: quality
         _state.value = Progress(songId = song.id, title = song.name, ratio = 0f)
 
         scope.launch {
-            val result = NCMusicApp.instance.musicRepository.downloadSong(song, quality) { ratio ->
-                // 只更新进度，不动其它字段；ratio 可能为 -1（总长未知）
-                _state.value = _state.value.copy(ratio = ratio)
+            try {
+                val result = NCMusicApp.instance.musicRepository.downloadSong(song, quality) { ratio ->
+                    // 只更新进度，不动其它字段；ratio 可能为 -1（总长未知）
+                    _state.update { it.copy(ratio = ratio) }
+                }
+                _state.update {
+                    it.copy(
+                        finished = true,
+                        success = result is ApiResult.Success,
+                        ratio = if (result is ApiResult.Success) 1f else it.ratio,
+                        message = when (result) {
+                            is ApiResult.Success -> "已下载：$label"
+                            is ApiResult.Error -> "下载失败：${result.message}"
+                        },
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _state.update {
+                    it.copy(
+                        finished = true,
+                        success = false,
+                        message = "下载失败：${e.message ?: e.javaClass.simpleName}",
+                    )
+                }
             }
-            _state.value = _state.value.copy(
-                finished = true,
-                success = result is ApiResult.Success,
-                ratio = if (result is ApiResult.Success) 1f else _state.value.ratio,
-                message = when (result) {
-                    is ApiResult.Success -> "已下载：$label"
-                    is ApiResult.Error -> "下载失败：${result.message}"
-                },
-            )
         }
     }
 

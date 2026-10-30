@@ -5,12 +5,7 @@ import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.runtime.SideEffect
 import android.app.Activity
-import com.buddy.ncmusic.playback.PlaybackManager
-import android.widget.Toast
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.foundation.background
 import com.buddy.ncmusic.ui.theme.ColorRevealOverlay
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
@@ -65,35 +60,6 @@ class MainActivity : ComponentActivity() {
                     val ctrl = WindowCompat.getInsetsController(window, view)
                     ctrl.isAppearanceLightStatusBars = !darkTheme
                     ctrl.isAppearanceLightNavigationBars = !darkTheme
-                }
-
-                // 播放失败提示：PlaybackManager 通过 errorMessage 上报原因，
-                // 这里统一以 Toast 呈现 —— 播放可从任意页面触发，
-                // 用全局 Toast 比在各页面各接一个提示更省事，也不会漏。
-                // ⚠️ 只订阅**错误信息**这一条细粒度流，而非完整 PlaybackState。
-                //
-                // 此处唯一用途是读取 errorMessage 弹 Toast。
-                // 若订阅完整 state，则播放进度（每秒数次）会让 MainActivity
-                // 的整个 setContent 组合域持续重组 —— 而它承载着
-                // Surface + NCMusicApp 这棵**全应用最大**的子树。
-                val playbackError by PlaybackManager.errorMessageFlow.collectAsState()
-                // 信息性提示（如音质降级）单独订阅 —— 与错误分开管理，
-                // 否则会被播放成功后的 errorMessage 清理逻辑一并抹掉
-                val playbackNotice by PlaybackManager.noticeMessageFlow.collectAsState()
-                val ctx = LocalContext.current
-
-                LaunchedEffect(playbackError) {
-                    playbackError?.let { msg ->
-                        Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
-                        PlaybackManager.clearError()      // 消费掉，避免重复弹
-                    }
-                }
-                LaunchedEffect(playbackNotice) {
-                    playbackNotice?.let { msg ->
-                        // 提示用短时长，与错误的"长时长"区分轻重
-                        Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
-                        PlaybackManager.clearNotice()
-                    }
                 }
 
                 // 分层：基础背景 → 颜色扩散 → 内容

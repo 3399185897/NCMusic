@@ -3,8 +3,8 @@ package com.buddy.ncmusic.ui.screens.stats
 import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.IntrinsicSize
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -38,6 +38,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.buddy.ncmusic.ui.util.Md3Motion
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.data.local.UserState
 import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
@@ -241,10 +243,14 @@ private fun WeeklyBars(
     days: List<Pair<String, Long>>,
     maxSeconds: Long,
 ) {
+    val reduceMotion = rememberReduceMotion()
     // 统一的加载动画：所有柱子一起长出来
     val grow by animateFloatAsState(
         targetValue = 1f,
-        animationSpec = tween(600, easing = FastOutSlowInEasing),
+        animationSpec = if (reduceMotion) snap() else tween(
+            Md3Motion.Long4,
+            easing = Md3Motion.EmphasizedDecelerate,
+        ),
         label = "barsGrow",
     )
 

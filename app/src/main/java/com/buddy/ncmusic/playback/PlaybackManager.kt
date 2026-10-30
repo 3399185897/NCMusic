@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.data.model.Song
@@ -38,6 +39,7 @@ import kotlinx.coroutines.launch
  * 播放管理器：持有 ExoPlayer、播放队列与播放状态，
  * 通过 StateFlow 向 Compose UI 暴露单一数据源。UI 与前台服务共用此单例。
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 object PlaybackManager {
 
     enum class PlayMode { SEQUENCE, LIST_LOOP, SINGLE_LOOP, SHUFFLE }
@@ -593,14 +595,24 @@ object PlaybackManager {
                 // 记录**真实命中**的档位
                 _state.update { it.copy(quality = resolved.level) }
 
-                // 实际低于请求时给出一次性提示，避免用户困惑「我明明选了无损」
-                if (resolved.level != resolved.requestedLevel) {
+                // 仅在**实际低于请求**时提示。
+                //
+                // 原先判据是「不相等」，于是「请求无损、服务端却给了 Hi-Res」
+                // 这种**升级**也会弹出「「无损」不可用」——完全反了。
+                if (resolved.degraded) {
                     // 写入 noticeMessage 而非 errorMessage ——
                     // 后者会被随后的清理逻辑抹掉，且语义上这不是"错误"
                     _state.update {
                         it.copy(
-                            noticeMessage = "当前账号无「${qualityLabelOf(resolved.requestedLevel)}」" +
-                                "权限，已自动切换为「${qualityLabelOf(resolved.level)}」",
+                            // 末尾附诊断串（如「有Cookie/eapi:code=200」）：
+                            // 用于区分「请求没发出去」（无 Cookie / eapi 异常）
+                            // 与「服务端收到但拒绝」（code=200 但 url 为空）。
+                            // 措辞不写死"账号无权限"——请求更高档位却拿到更低档位，
+                            // 既可能是账号权益不足，也可能是**该曲本身没有更高规格的源**。
+                            // 具体原因由括号里的诊断信息给出（服务端实际回报的档位与码率）。
+                            noticeMessage = "「${qualityLabelOf(resolved.requestedLevel)}」不可用" +
+                                "已切换为「${qualityLabelOf(resolved.level)}」" +
+                                (if (resolved.detail.isNotBlank()) "（${resolved.detail}）" else ""),
                         )
                     }
                 }

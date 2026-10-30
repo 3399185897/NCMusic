@@ -36,12 +36,5 @@ class NCMusicApp : Application() {
         // 启动时按用户设置的上限回收一次缓存：
         // 上次运行可能留下了超出当前上限的数据（用户调小过上限）
         appScope.launch { runCatching { cacheManager.enforceLimit() } }
-
-        // 清理上次异常退出残留的临时工作文件。
-        //
-        // 正常流程下这些文件（dl_* / art_* / identify.m4a）用完即删，
-        // 但进程被杀、崩溃时会残留。只清理**静默超过 1 小时**的，
-        // 因此绝不会误删本次启动后新发起的下载。
-        appScope.launch { runCatching { cacheManager.cleanupStaleTempFiles() } }
     }
 }

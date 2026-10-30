@@ -2,6 +2,7 @@ package com.buddy.ncmusic.playback
 
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 
 /**
@@ -15,6 +16,7 @@ import androidx.media3.exoplayer.ExoPlayer
  * [PlaybackManager]（它才持有真实队列），从而让通知栏出现完整的
  * 「上一曲 / 播放暂停 / 下一曲」三个按钮，且全部可点。
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class NcPlayer(private val exo: ExoPlayer) : ForwardingPlayer(exo) {
 
     override fun getAvailableCommands(): Player.Commands =

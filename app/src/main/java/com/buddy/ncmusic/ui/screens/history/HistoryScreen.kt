@@ -51,7 +51,7 @@ class HistoryViewModel : ViewModel() {
         viewModelScope.launch {
             val state = prefs.userStateFlow.first()
             if (state.isLoggedIn) {
-                when (val r = repo.playHistory(state.userId)) {
+                when (val r = repo.recentSongs(limit = 100)) {
                     is ApiResult.Success -> _songs.value = r.data
                     is ApiResult.Error -> Unit
                 }

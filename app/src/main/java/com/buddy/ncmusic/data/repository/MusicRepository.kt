@@ -75,8 +75,17 @@ class MusicRepository(private val prefs: UserPreferences) {
      * 之所以不改成阻塞式启动：在 `Application.onCreate` 里同步读 DataStore
      * 会拖慢冷启动，且 DataStore 本身不提供阻塞 API。惰性按需恢复
      * 既不影响启动速度，又能保证正确性。
+     *
+     * ## 为什么是 public
+     *
+     * 启动预热器（`StartupPrefetcher.warmUp`）会**并发**发出首页各区块的
+     * 请求，而 Cookie 恢复是 `Application.onCreate` 里的**另一个**协程 ——
+     * 两者没有先后保证。预热器必须在发起任何账号级请求前先调本方法，
+     * 否则抢跑的那几个请求会以**未登录**身份发出，
+     * 返回的通用数据随后被写进 `ContentCache`，
+     * 首页在 TTL 10 分钟内都只会显示这批"未登录默认数据"。
      */
-    private suspend fun ensureCookieRestored() {
+    suspend fun ensureCookieRestored() {
         if (cookieRestored) return
         cookieMutex.withLock {
             // 双重检查：可能在等锁期间已被其它协程完成
@@ -235,7 +244,24 @@ class MusicRepository(private val prefs: UserPreferences) {
 
     // ---------------- 推荐 / 排行榜 ----------------
 
+    /**
+     * 账号级「推荐歌单」（官方首页区块同源）。
+     *
+     * 用 `/v1/discovery/recommend/resource` 而非 `/personalized/playlist`：
+     * 后者未登录也返回同一份通用列表，毫无个性化。
+     */
+    suspend fun recommendPlaylists(): ApiResult<List<Playlist>> = safeApiCall {
+        ensureCookieRestored()
+        api.recommendPlaylists(30)
+    }
+
     suspend fun personalizedPlaylists(): ApiResult<List<Playlist>> = safeApiCall {
+        // 「推荐歌单」是账号级个性化推荐：带登录 Cookie 时返回
+        // 该账号的口味推荐，未登录则只能拿到一份**对所有人相同**的
+        // 通用列表。此前漏了这一步 —— 启动预热抢在 Cookie 恢复前发出，
+        // 通用数据被写进 ContentCache，首页在缓存有效期内一直显示它，
+        // 用户看到的就是"不随账号变化"的假个性化内容。
+        ensureCookieRestored()
         api.personalizedPlaylists(30)
     }
 
@@ -245,20 +271,24 @@ class MusicRepository(private val prefs: UserPreferences) {
         api.recommendSongs()
     }
 
-    /** 雷达歌单（个性化歌单，与推荐歌单不同批次） */
     /** 账号等级 */
     suspend fun userLevel(uid: Long): ApiResult<Int> = safeApiCall { api.userDetail(uid) }
 
     /**
-     * 雷达歌单。
+     * 官方雷达歌单。
      *
-     * limit 默认 20 —— 首页的「正方形无缝拼接」拼贴墙固定使用 18 个方块，
-     * 若来源不足 18 个，拼贴会按 `index % size` 循环取用而出现**封面重复**。
-     * 取 20 可确保 18 个方块各用一张不同封面。
+     * 首页固定展示 7 张：优先取移动端首页的「你的雷达歌单」，数量不足时
+     * 用同一账号的每日推荐歌单补齐。请求前确保 Cookie 已恢复，避免冷启动
+     * 时误以游客身份拿到与账号无关的内容。
+     *
+     * @param refresh 下拉刷新时请求服务端重新生成首页区块
      */
-    suspend fun radarPlaylists(limit: Int = 20): ApiResult<List<Playlist>> = safeApiCall {
+    suspend fun radarPlaylists(
+        limit: Int = 7,
+        refresh: Boolean = false,
+    ): ApiResult<List<Playlist>> = safeApiCall {
         ensureCookieRestored()
-        api.radarPlaylists(limit)
+        api.radarPlaylists(limit, refresh)
     }
 
     /** 为你推荐（个性化，与每日推荐不同批次） */
@@ -804,9 +834,16 @@ class MusicRepository(private val prefs: UserPreferences) {
         api.createPlaylist(name) ?: throw ApiException(-1, "创建歌单失败，请确认已登录")
     }
 
+    /** 听歌排行（按播放次数），由排行榜相关功能使用。 */
     suspend fun playHistory(uid: Long): ApiResult<List<Song>> = safeApiCall {
         ensureCookieRestored()
         api.playHistory(uid)
+    }
+
+    /** 真实最近播放（按播放时间倒序）。 */
+    suspend fun recentSongs(limit: Int = 100): ApiResult<List<Song>> = safeApiCall {
+        ensureCookieRestored()
+        api.recentSongs(limit)
     }
 
     suspend fun identifySong(audioBytes: ByteArray): ApiResult<Song?> = safeApiCall {

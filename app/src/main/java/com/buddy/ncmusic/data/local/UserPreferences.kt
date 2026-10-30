@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.buddy.ncmusic.data.cache.ContentCache
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -26,6 +27,8 @@ data class UserState(
     val dynamicColor: Boolean = true,
     /** 自定义主题色（ARGB Long，0 = 未设置） */
     val customColor: Long = 0L,
+    /** 底栏顶部是否使用圆弧；false = 平角 */
+    val bottomBarRounded: Boolean = true,
     /** 默认音质（兜底） */
     val quality: String = "standard",
     /** WiFi 下最高音质 */
@@ -115,6 +118,7 @@ class UserPreferences(private val context: Context) {
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val CUSTOM_COLOR = longPreferencesKey("custom_color")
+        val BOTTOM_BAR_ROUNDED = booleanPreferencesKey("bottom_bar_rounded")
         val QUALITY = stringPreferencesKey("quality")
         val WIFI_QUALITY = stringPreferencesKey("wifi_quality")
         val MOBILE_QUALITY = stringPreferencesKey("mobile_quality")
@@ -154,6 +158,7 @@ class UserPreferences(private val context: Context) {
             themeMode = p[Keys.THEME_MODE] ?: "system",
             dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
             customColor = p[Keys.CUSTOM_COLOR] ?: 0L,
+            bottomBarRounded = p[Keys.BOTTOM_BAR_ROUNDED] ?: true,
             quality = p[Keys.QUALITY] ?: "standard",
             wifiQuality = p[Keys.WIFI_QUALITY] ?: "exhigh",
             mobileQuality = p[Keys.MOBILE_QUALITY] ?: "higher",
@@ -295,6 +300,7 @@ class UserPreferences(private val context: Context) {
         cookie: String,
         level: Int = 0,
     ) {
+        ContentCache.clearUserScoped()
         context.dataStore.edit { p ->
             p[Keys.COOKIE] = cookie
             p[Keys.USER_ID] = userId
@@ -305,6 +311,7 @@ class UserPreferences(private val context: Context) {
     }
 
     suspend fun clearLogin() {
+        ContentCache.clearUserScoped()
         context.dataStore.edit { p ->
             p.remove(Keys.COOKIE)
             p.remove(Keys.USER_ID)
@@ -324,6 +331,10 @@ class UserPreferences(private val context: Context) {
 
     suspend fun setCustomColor(argb: Long) {
         context.dataStore.edit { it[Keys.CUSTOM_COLOR] = argb }
+    }
+
+    suspend fun setBottomBarRounded(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.BOTTOM_BAR_ROUNDED] = enabled }
     }
 
     suspend fun setQuality(quality: String) {

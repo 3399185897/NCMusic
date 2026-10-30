@@ -25,8 +25,8 @@ android {
         applicationId = "com.buddy.ncmusic"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 26
+        versionName = "1.2.1"
 
         vectorDrawables { useSupportLibrary = true }
     }
@@ -90,6 +90,9 @@ kotlin {
 }
 
 dependencies {
+    // 单元测试（JVM）：验证加密等纯逻辑与参考实现的逐字节一致性
+    testImplementation("junit:junit:4.13.2")
+
     // Compose BOM 统一版本
     implementation(platform(libs.androidx.compose.bom))
 

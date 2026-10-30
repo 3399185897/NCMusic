@@ -4,7 +4,7 @@ import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.ui.components.ExpressiveLoadingIndicator
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
-import com.buddy.ncmusic.ui.components.SquaredMosaic
+import com.buddy.ncmusic.ui.components.RadarCarousel
 import com.buddy.ncmusic.ui.components.rememberBottomSafeSpace
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -37,9 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -105,14 +103,19 @@ fun HomeScreen(
                     state = ptrState,
                     isRefreshing = refreshing,
                     modifier = Modifier.align(Alignment.TopCenter),
-                    // 官方指示器默认带容器底色 + elevation 阴影，
-                    // 而 Expressive 形状本身是实心图形，再套一层带阴影的圆形容器
-                    // 会在图形周围出现一圈灰边 —— 故容器透明、阴影归零。
-                    containerColor = Color.Transparent,
-                    elevation = 0.dp,
+                    // 指示器原先设为「透明容器 + 零阴影」，理由是实心图形
+                    // 外面再套带阴影的圆形容器会出现一圈灰边。
+                    //
+                    // 现按需求改为**带圆形底色**：用 MD3 容器角色
+                    // `surfaceContainerHigh` 而非纯白/纯黑 —— 它在浅色与深色
+                    // 主题下都能与页面表层形成可见分层，也不会像纯白那样
+                    // 在深色主题里过于刺眼。阴影取 2dp，够托起层次又不抢眼。
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    elevation = 2.dp,
                 ) {
-                    // 下拉场景用 28dp，贴合指示器原有的紧凑比例
-                    ExpressiveLoadingIndicator(modifier = Modifier.size(28.dp))
+                    // 容器为 40dp 圆形，内容取 32dp 留出 4dp 内边距；
+                    // 比原先的 28dp 更醒目，同时仍在容器内不溢出。
+                    ExpressiveLoadingIndicator(modifier = Modifier.size(32.dp))
                 }
             },
         ) {
@@ -140,11 +143,11 @@ fun HomeScreen(
                         }
                     }
 
-                    // ---------- 雷达歌单（不同大小的圆角正方形拼贴）----------
+                    // ---------- 雷达歌单（官方账号级推荐 · MD3 Hero Carousel）----------
                     if (showRadar && radarPlaylists.isNotEmpty()) {
                         item { SectionTitle("雷达歌单") }
                         item {
-                            SquaredMosaic(
+                            RadarCarousel(
                                 playlists = radarPlaylists,
                                 onOpenPlaylist = onOpenPlaylist,
                             )

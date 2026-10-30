@@ -1,7 +1,5 @@
 package com.buddy.ncmusic.ui.screens.library
 
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.buddy.ncmusic.NCMusicApp
@@ -35,30 +33,15 @@ class LibraryViewModel : ViewModel() {
 
     init {
         viewModelScope.launch {
-            // ⚠️ 必须先把"账号身份"从用户状态里**提取出来并去重**，
-            // 再触发加载 —— 不能直接 collect 整个 UserState。
-            //
-            // 原因：`userStateFlow` 是 **DataStore 全量偏好**的映射，
-            // 任何一项偏好变化都会发射新值。最典型的触发源是
-            // 播放时的听歌时长累计（每 30 秒写一次 `total_listen_seconds`）——
-            // 原先的写法会让歌单与听歌历史**每 30 秒被重新请求一次**，
-            // 既是无谓的网络开销，也会造成列表频繁重建、滚动位置丢失。
-            //
-            // 现在只关心 (isLoggedIn, userId) 这一对身份标识，
-            // 用 distinctUntilChanged 收敛：只有**账号真的变了**才重新加载。
-            prefs.userStateFlow
-                .map { it.isLoggedIn to it.userId }
-                .distinctUntilChanged()
-                .collectLatest { (loggedIn, uid) ->
-                    if (loggedIn && uid > 0) {
-                        loadPlaylists(uid)
-                        loadHistory(uid)
-                    } else {
-                        // 退出登录：清空展示数据，避免上一个账号的内容残留
-                        _playlists.value = emptyList()
-                        _history.value = emptyList()
-                    }
+            prefs.userStateFlow.collectLatest { state ->
+                if (state.isLoggedIn) {
+                    loadPlaylists(state.userId)
+                    loadHistory()
+                } else {
+                    _playlists.value = emptyList()
+                    _history.value = emptyList()
                 }
+            }
         }
     }
 
@@ -71,10 +54,18 @@ class LibraryViewModel : ViewModel() {
         _loading.value = false
     }
 
-    private suspend fun loadHistory(uid: Long) {
-        when (val r = repo.playHistory(uid)) {
+    private suspend fun loadHistory() {
+        when (val r = repo.recentSongs(limit = 100)) {
             is ApiResult.Success -> _history.value = r.data
             is ApiResult.Error -> Unit
+        }
+    }
+
+    /** 进入「我的」时刷新，确保刚播放的歌曲能出现在真实最近播放中。 */
+    fun refreshHistory() {
+        viewModelScope.launch {
+            val state = prefs.userStateFlow.first()
+            if (state.isLoggedIn) loadHistory()
         }
     }
 

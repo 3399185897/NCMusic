@@ -14,7 +14,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
-import com.buddy.ncmusic.util.audioSpecText
 import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -30,12 +29,13 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.AnimatedContent
 import com.buddy.ncmusic.ui.theme.AppShapes
+import com.buddy.ncmusic.ui.theme.contrastOn
+import com.buddy.ncmusic.ui.util.Md3Motion
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import com.buddy.ncmusic.ui.components.WaveProgressBar
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableFloatStateOf
@@ -61,6 +61,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -129,6 +130,7 @@ fun PlayerScreen(
     expanded: Boolean = true,
 ) {
     val state by PlaybackManager.state.collectAsState()
+    val reduceMotion = rememberReduceMotion()
     val song = state.song
     // 音质面板（ModalBottomSheet）——
     // 原先是 DropdownMenu，只能显示一行短标签；
@@ -153,7 +155,7 @@ fun PlayerScreen(
     // 而不是沿用当前设置里的在线音质 —— 否则会出现
     // 「播着 MP3，顶上却写着超清母带」这种误导。
     val qualityText = if (isLocalTrack) {
-        val ext = song?.localPath?.substringAfterLast('.', "")?.uppercase().orEmpty()
+        val ext = song.localPath.substringAfterLast('.', "").uppercase()
         if (ext.isNotBlank()) ext else "本地"
     } else {
         qualityLabel(state.quality)
@@ -257,9 +259,10 @@ fun PlayerScreen(
             } else {
                 offsetY.animateTo(
                     targetValue = target,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
+                    animationSpec = tween(
+                        durationMillis = if (expanded) Md3Motion.Long1 else Md3Motion.Medium2,
+                        easing = if (expanded) Md3Motion.EmphasizedDecelerate
+                        else Md3Motion.EmphasizedAccelerate,
                     ),
                 )
             }
@@ -312,7 +315,9 @@ fun PlayerScreen(
                         modifier = Modifier
                             .clip(AppShapes.of(10.dp))
                             .clickable(enabled = !isLocalTrack) { qualitySheetOpen = true }
+                            .heightIn(min = 48.dp)
                             .padding(horizontal = 12.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             text = qualityText,
@@ -372,37 +377,36 @@ fun PlayerScreen(
                         }
 
                         if (detailQualityPicker) {
-                            // 只列出该曲目支持的档位（与右上角音质菜单同一口径）
-                            // 与音质面板同口径：官方展示的档位、由高到低、
-                            // 超出该曲目能力的置灰（而非隐藏）
+                            // 与音质面板同一口径：全量列出官方档位、由高到低。
+                            // 是否真能拿到由服务端按账号权限裁决，
+                            // 请求失败走降级链并提示，客户端不做预判。
                             AudioQuality.visibleDescending.forEach { q ->
-                                val dlAvailable =
-                                    AudioQuality.availableFor(q.level, sheetSong.maxBr)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable(enabled = dlAvailable) {
+                                        .heightIn(min = 48.dp)
+                                        .clickable {
                                             DownloadController.download(
                                                 song = sheetSong,
                                                 quality = q.level,
-                                                scope = scope,
                                             )
                                             detailQualityPicker = false
                                         }
                                         .padding(horizontal = 40.dp, vertical = 10.dp),
                                 ) {
                                     Text(
-                                        text = if (dlAvailable) q.label
-                                        else "${q.label}（本曲不支持）",
+                                        text = q.label,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = if (dlAvailable) {
-                                            MaterialTheme.colorScheme.onSurface
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                                        },
+                                        color = MaterialTheme.colorScheme.onSurface,
                                     )
                                 }
                             }
+                            Text(
+                                text = "下载音质由当前账号的会员权益决定；应用不会绕过平台版权限制。",
+                                modifier = Modifier.padding(horizontal = 40.dp, vertical = 8.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
 
                         // ---------- 下载进度 ----------
@@ -545,11 +549,10 @@ fun PlayerScreen(
                             if (infoSong.duration > 0) {
                                 SongInfoRow("时长", formatTime(infoSong.duration))
                             }
-                            AudioQuality.highestOf(infoSong.maxBr)?.let {
-                                SongInfoRow("官方最高音质", it.label)
-                            }
-                            infoSong.audioSpecText()?.let {
-                                SongInfoRow("音频规格", it)
+                            // 不再显示「官方最高音质」：歌曲对象的码率字段
+                            // 在多数列表接口中缺失，推算结果不可靠
+                            AudioQuality.of(state.quality)?.specText?.let {
+                                SongInfoRow("当前音质规格", it)
                             }
                             SongInfoRow("歌曲 ID", infoSong.id.toString())
                         }
@@ -688,10 +691,12 @@ fun PlayerScreen(
 
                 // 音频规格（采样率 / 位深）—— 小字、弱化，不抢主信息
                 //
-                // 说明：采样率与位深按该曲目**可得的最高档位**推导，
-                // 而非用户当前选择的档位 —— 后者可能因账号权限拿不到，
-                // 那样显示的规格会与实听不符。服务端未给出码率时不显示。
-                song.audioSpecText()?.let { spec ->
+                // 跟随**当前所选音质**显示对应规格 ——
+                // 此前按歌曲对象的最高码率推导，但列表接口经常缺失
+                // `hr` / `maxbr` 字段，推算结果偏低，
+                // 会把能播 96kHz/24bit 的歌唱成 48kHz/16bit，与实听不符。
+                // 实际命中档位与所选不同（如非会员被降级）时由 Snackbar 提示。
+                AudioQuality.of(state.quality)?.specText?.let { spec ->
                     Spacer(Modifier.height(2.dp))
                     Text(
                         text = spec,
@@ -798,26 +803,27 @@ fun PlayerScreen(
                         // 播放时为"圆角方形"、暂停时为"正圆"，形成可辨识的形态切换
                         val playSize by animateDpAsState(
                             targetValue = if (state.isPlaying) 66.dp else 60.dp,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMediumLow,
+                            animationSpec = if (reduceMotion) snap() else tween(
+                                Md3Motion.Short4,
+                                easing = Md3Motion.EmphasizedDecelerate,
                             ),
                             label = "playSize",
                         )
                         val playCorner by animateDpAsState(
                             targetValue = if (state.isPlaying) 22.dp else 30.dp,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioLowBouncy,
-                                stiffness = Spring.StiffnessMediumLow,
+                            animationSpec = if (reduceMotion) snap() else tween(
+                                Md3Motion.Short4,
+                                easing = Md3Motion.EmphasizedDecelerate,
                             ),
                             label = "playCorner",
                         )
+                        val playAccent = coverColor ?: MaterialTheme.colorScheme.primary
 
                         Box(
                             modifier = Modifier
                                 .size(playSize)
                                 .clip(AppShapes.of(playCorner))
-                                .background(coverColor ?: MaterialTheme.colorScheme.primary)
+                                .background(playAccent)
                                 .clickable { PlaybackManager.togglePlayPause() },
                             contentAlignment = Alignment.Center,
                         ) {
@@ -826,7 +832,7 @@ fun PlayerScreen(
                                 // 容器 30dp ≈ 原 24dp 圆环的视觉分量（0.79 缩放）。
                                 ExpressiveLoadingIndicator(
                                     modifier = Modifier.size(30.dp),
-                                    color = MaterialTheme.colorScheme.surface,
+                                    color = playAccent.contrastOn(),
                                 )
                             } else {
                                 // 图标切换：缩放 + 淡入淡出，避免生硬跳变
@@ -834,9 +840,9 @@ fun PlayerScreen(
                                     targetState = state.isPlaying,
                                     transitionSpec = {
                                         (scaleIn(initialScale = 0.55f) + fadeIn(
-                                            tween(180, easing = FastOutSlowInEasing),
+                                            tween(Md3Motion.Short4, easing = Md3Motion.StandardDecelerate),
                                         )) togetherWith (scaleOut(targetScale = 0.55f) + fadeOut(
-                                            tween(140, easing = FastOutSlowInEasing),
+                                            tween(Md3Motion.Short3, easing = Md3Motion.StandardAccelerate),
                                         ))
                                     },
                                     label = "playIcon",
@@ -846,7 +852,7 @@ fun PlayerScreen(
                                         else Icons.Default.PlayArrow,
                                         contentDescription = if (playing) "暂停" else "播放",
                                         modifier = Modifier.size(34.dp),
-                                        tint = MaterialTheme.colorScheme.surface,
+                                        tint = playAccent.contrastOn(),
                                     )
                                 }
                             }
@@ -875,10 +881,10 @@ fun PlayerScreen(
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         // 爱心：图标切换做缩放+淡入淡出，收藏态再叠一层弹性放大
                         val likeScale by animateFloatAsState(
-                            targetValue = if (state.isLiked) 1.14f else 1f,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium,
+                            targetValue = if (state.isLiked) 1.08f else 1f,
+                            animationSpec = if (reduceMotion) snap() else tween(
+                                Md3Motion.Short4,
+                                easing = Md3Motion.Standard,
                             ),
                             label = "likeScale",
                         )
@@ -887,9 +893,9 @@ fun PlayerScreen(
                                 targetState = state.isLiked,
                                 transitionSpec = {
                                     (scaleIn(initialScale = 0.4f) + fadeIn(
-                                        tween(180, easing = FastOutSlowInEasing),
+                                        tween(Md3Motion.Short4, easing = Md3Motion.StandardDecelerate),
                                     )) togetherWith (scaleOut(targetScale = 0.4f) + fadeOut(
-                                        tween(140, easing = FastOutSlowInEasing),
+                                        tween(Md3Motion.Short3, easing = Md3Motion.StandardAccelerate),
                                     ))
                                 },
                                 label = "likeIcon",

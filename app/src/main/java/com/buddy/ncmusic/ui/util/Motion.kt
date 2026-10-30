@@ -1,14 +1,11 @@
 package com.buddy.ncmusic.ui.util
 
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.DisposableEffect
-import android.os.Looper
-import android.os.Handler
-import android.database.ContentObserver
 import android.content.Context
 import android.provider.Settings
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
@@ -46,42 +43,8 @@ import androidx.compose.ui.platform.LocalContext
 @Composable
 fun rememberReduceMotion(): Boolean {
     val context = LocalContext.current
-
-    // ⚠️ 不能只 `remember { ... }` 读一次。
-    //
-    // 系统「移除动画」是**运行时可切换**的 —— 用户完全可能
-    // 一边用着 App 一边去设置里打开它（这正是无障碍功能的典型使用方式）。
-    // 只读一次会导致：本次会话内所有动画继续照播，直到重启 App 才生效。
-    //
-    // 这里用 ContentObserver 监听两个 scale 键的 URI，
-    // 变化时重新求值并触发重组。开销极小（仅设置变更时回调一次）。
-    var reduce by remember { mutableStateOf(isReduceMotionEnabled(context)) }
-
-    DisposableEffect(context) {
-        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
-            override fun onChange(selfChange: Boolean) {
-                reduce = isReduceMotionEnabled(context)
-            }
-        }
-        val resolver = context.contentResolver
-        // 两个键都要监听：系统「移除动画」会把它们同时置 0，
-        // 但个别 ROM 只改其中一个
-        listOf(
-            Settings.Global.ANIMATOR_DURATION_SCALE,
-            Settings.Global.TRANSITION_ANIMATION_SCALE,
-        ).forEach { key ->
-            runCatching {
-                resolver.registerContentObserver(
-                    Settings.Global.getUriFor(key),
-                    false,
-                    observer,
-                )
-            }
-        }
-        onDispose { runCatching { resolver.unregisterContentObserver(observer) } }
-    }
-
-    return reduce
+    // 系统设置在一次会话内极少变化，remember 即可，无需监听
+    return remember { isReduceMotionEnabled(context) }
 }
 
 /** 非组合环境下的等价判断（供 Service / 后台逻辑使用） */
@@ -91,4 +54,45 @@ fun isReduceMotionEnabled(context: Context): Boolean {
 
     return scaleOf(Settings.Global.ANIMATOR_DURATION_SCALE) == 0f ||
         scaleOf(Settings.Global.TRANSITION_ANIMATION_SCALE) == 0f
+}
+
+/**
+ * Material 3 官方运动令牌（material3 1.4.0，MotionTokens）。
+ *
+ * 项目原先大量使用 [androidx.compose.animation.core.FastOutSlowInEasing]。
+ * 它属于旧版 Material 的 legacy 曲线，并非 MD3 的 standard/emphasized
+ * 令牌。这里集中声明官方数值，避免每个组件各自写一套“近似动画”。
+ */
+object Md3Motion {
+    // ---- Easing（数值与 Compose Material3 MotionTokens 1.4.0 一致）----
+    val Standard = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+    val StandardAccelerate = CubicBezierEasing(0.3f, 0f, 1f, 1f)
+    val StandardDecelerate = CubicBezierEasing(0f, 0f, 0f, 1f)
+    val Emphasized = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+    val EmphasizedAccelerate = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
+    val EmphasizedDecelerate = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+
+    // ---- Duration ----
+    const val Short2 = 100
+    const val Short3 = 150
+    const val Short4 = 200
+    const val Medium1 = 250
+    const val Medium2 = 300
+    const val Medium3 = 350
+    const val Long1 = 450
+    const val Long4 = 600
+
+    /** 空间属性（位移/尺寸）默认使用 medium2。 */
+    fun <T> spatial(
+        reduceMotion: Boolean,
+        durationMillis: Int = Medium2,
+        easing: CubicBezierEasing = EmphasizedDecelerate,
+    ): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(durationMillis, easing = easing)
+
+    /** 非空间属性（淡入淡出/颜色）默认使用 short4。 */
+    fun <T> effects(
+        reduceMotion: Boolean,
+        durationMillis: Int = Short4,
+        easing: CubicBezierEasing = Standard,
+    ): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(durationMillis, easing = easing)
 }

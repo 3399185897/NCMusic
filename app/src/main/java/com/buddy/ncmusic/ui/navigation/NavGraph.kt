@@ -1,7 +1,14 @@
 package com.buddy.ncmusic.ui.navigation
 
+import android.os.SystemClock
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.tween
 import com.buddy.ncmusic.ui.util.rememberReduceMotion
+import com.buddy.ncmusic.ui.util.Md3Motion
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -17,34 +24,36 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -56,6 +65,8 @@ import com.buddy.ncmusic.NCMusicApp
 import com.buddy.ncmusic.R
 import com.buddy.ncmusic.playback.PlaybackManager
 import com.buddy.ncmusic.ui.components.MiniPlayer
+import com.buddy.ncmusic.data.prefetch.StartupPrefetcher
+import com.buddy.ncmusic.ui.screens.startup.StartupScreen
 import com.buddy.ncmusic.ui.screens.artist.ArtistScreen
 import com.buddy.ncmusic.ui.screens.discover.DiscoverScreen
 import com.buddy.ncmusic.ui.screens.about.AboutScreen
@@ -101,13 +112,14 @@ object Routes {
 private data class TabItem(
     val route: String,
     val labelRes: Int,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val selectedIcon: androidx.compose.ui.graphics.vector.ImageVector,
+    val unselectedIcon: androidx.compose.ui.graphics.vector.ImageVector,
 )
 
 private val bottomTabs = listOf(
-    TabItem(Routes.HOME, R.string.tab_home, Icons.Default.Home),
-    TabItem(Routes.DISCOVER, R.string.tab_discover, Icons.Default.Search),
-    TabItem(Routes.LIBRARY, R.string.tab_library, Icons.Default.Person),
+    TabItem(Routes.HOME, R.string.tab_home, Icons.Filled.Home, Icons.Outlined.Home),
+    TabItem(Routes.DISCOVER, R.string.tab_discover, Icons.Filled.Search, Icons.Outlined.Search),
+    TabItem(Routes.LIBRARY, R.string.tab_library, Icons.Filled.Person, Icons.Outlined.Person),
 )
 
 /** Tab 在底栏中的序号，用于判断切换方向；非 Tab 路由返回 -1 */
@@ -116,12 +128,45 @@ private fun tabIndexOf(route: String?): Int =
 
 @Composable
 fun NCMusicApp() {
-    val startPage by NCMusicApp.instance.userPreferences.userStateFlow
+    val userState by NCMusicApp.instance.userPreferences.userStateFlow
         .collectAsState(initial = null)
-    val startDest = when (startPage?.startPage) {
-        "discover" -> Routes.DISCOVER
-        "library" -> Routes.LIBRARY
-        else -> Routes.HOME
+    val loadedState = userState
+    val startupProgress by StartupPrefetcher.progress.collectAsState()
+    // DataStore 是异步的。若首帧先用默认值创建 NavHost，之后即便读到
+    // startPage=discover/library，NavController 的起始目的地也不会再改，
+    // 用户的“启动页”设置等于失效。因此先等偏好就绪，再创建导航图。
+    if (loadedState == null) {
+        StartupScreen(progress = startupProgress)
+        return
+    }
+
+    var appReady by rememberSaveable { mutableStateOf(false) }
+    var splashVisible by rememberSaveable { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        val startedAt = SystemClock.elapsedRealtime()
+        withTimeoutOrNull(3_500L) {
+            StartupPrefetcher.warmUp(
+                isLoggedIn = loadedState.isLoggedIn,
+            )
+        }
+        val remaining = 800L - (SystemClock.elapsedRealtime() - startedAt)
+        if (remaining > 0L) delay(remaining)
+        appReady = true
+        // 先让主界面在遮罩下完成首帧组合，再淡出遮罩，避免露出空白帧。
+        delay(180L)
+        splashVisible = false
+    }
+    if (!appReady) {
+        StartupScreen(progress = startupProgress)
+        return
+    }
+    // 仅本次启动读取一次；在设置页修改“启动页”不应重配当前 NavController。
+    val startDest = remember {
+        when (loadedState.startPage) {
+            "discover" -> Routes.DISCOVER
+            "library" -> Routes.LIBRARY
+            else -> Routes.HOME
+        }
     }
 
     val navController = rememberNavController()
@@ -148,6 +193,36 @@ fun NCMusicApp() {
 
     // 系统「减少动态效果」偏好：为 true 时所有转场退化为瞬时切换
     val reduceMotion = rememberReduceMotion()
+
+    // MD3 Snackbar：播放错误与音质降级等提示统一在 Scaffold 内展示。
+    // 原先 error 走 Toast，而 noticeMessage 根本没有消费端 ——
+    // 即使 PlaybackManager 写入了“已降级到极高音质”，用户也永远看不到。
+    val snackbarHostState = remember { SnackbarHostState() }
+    val playbackError by PlaybackManager.errorMessageFlow.collectAsState()
+    val playbackNotice by PlaybackManager.noticeMessageFlow.collectAsState()
+    LaunchedEffect(playbackError) {
+        playbackError?.let { message ->
+            snackbarHostState.showSnackbar(
+                message = message,
+                withDismissAction = true,
+                duration = SnackbarDuration.Long,
+            )
+            PlaybackManager.clearError()
+        }
+    }
+    LaunchedEffect(playbackNotice) {
+        playbackNotice?.let { message ->
+            snackbarHostState.showSnackbar(
+                message = message,
+                withDismissAction = true,
+                duration = SnackbarDuration.Short,
+            )
+            PlaybackManager.clearNotice()
+        }
+    }
+    val systemNavigationBottom = WindowInsets.navigationBars
+        .asPaddingValues()
+        .calculateBottomPadding()
 
     // 播放器改为**同树覆盖层**（不再走 NavHost 路由）。
     //
@@ -178,12 +253,16 @@ fun NCMusicApp() {
                     containerColor = MaterialTheme.colorScheme.surfaceContainer,
                     tonalElevation = 0.dp,
                     modifier = Modifier.clip(
-                        RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                        RoundedCornerShape(
+                            topStart = if (loadedState.bottomBarRounded) 24.dp else 0.dp,
+                            topEnd = if (loadedState.bottomBarRounded) 24.dp else 0.dp,
+                        ),
                     ),
                 ) {
                     bottomTabs.forEach { tab ->
+                        val selected = currentRoute == tab.route
                         NavigationBarItem(
-                            selected = currentRoute == tab.route,
+                            selected = selected,
                             onClick = {
                                 // 记录来源 Tab，供转场判断方向
                                 val from = tabIndexOf(currentRoute)
@@ -194,8 +273,20 @@ fun NCMusicApp() {
                                     restoreState = true
                                 }
                             },
-                            icon = { Icon(tab.icon, contentDescription = null) },
+                            icon = {
+                                Icon(
+                                    imageVector = if (selected) tab.selectedIcon else tab.unselectedIcon,
+                                    contentDescription = null,
+                                )
+                            },
                             label = { Text(stringResource(tab.labelRes)) },
+                            colors = NavigationBarItemDefaults.colors(
+                                selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
                         )
                     }
                 }
@@ -232,28 +323,19 @@ fun NCMusicApp() {
                 // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
                 // 从而避免此前"从我的返回发现时方向相反"的问题。
                 enterTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 4 } +
-                            fadeIn(tween(240))
-                    } else {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { -it / 4 } +
-                            fadeIn(tween(240))
-                    }
+                    tabEnterTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
                 exitTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 6 } +
-                            fadeOut(tween(200))
-                    } else {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 6 } +
-                            fadeOut(tween(200))
-                    }
+                    tabExitTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
-                popEnterTransition = { fadeIn(tween(200)) },
-                popExitTransition = {
-                    slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 4 } +
-                        fadeOut(tween(200))
-                },
+                popEnterTransition = { popEnterTransition(reduceMotion) },
+                popExitTransition = { popExitTransition(reduceMotion) },
             ) {
                 HomeScreen(
                     onPlay = { songs, index ->
@@ -278,28 +360,19 @@ fun NCMusicApp() {
                 // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
                 // 从而避免此前"从我的返回发现时方向相反"的问题。
                 enterTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 4 } +
-                            fadeIn(tween(240))
-                    } else {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { -it / 4 } +
-                            fadeIn(tween(240))
-                    }
+                    tabEnterTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
                 exitTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 6 } +
-                            fadeOut(tween(200))
-                    } else {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 6 } +
-                            fadeOut(tween(200))
-                    }
+                    tabExitTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
-                popEnterTransition = { fadeIn(tween(200)) },
-                popExitTransition = {
-                    slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 4 } +
-                        fadeOut(tween(200))
-                },
+                popEnterTransition = { popEnterTransition(reduceMotion) },
+                popExitTransition = { popExitTransition(reduceMotion) },
             ) {
                 DiscoverScreen(
                     onPlay = { songs, index ->
@@ -325,28 +398,19 @@ fun NCMusicApp() {
                 // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
                 // 从而避免此前"从我的返回发现时方向相反"的问题。
                 enterTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { it / 4 } +
-                            fadeIn(tween(240))
-                    } else {
-                        slideInHorizontally(tween(300, easing = FastOutSlowInEasing)) { -it / 4 } +
-                            fadeIn(tween(240))
-                    }
+                    tabEnterTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
                 exitTransition = {
-                    if (tabIndexOf(targetState.destination.route) >= lastTabIndex) {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 6 } +
-                            fadeOut(tween(200))
-                    } else {
-                        slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 6 } +
-                            fadeOut(tween(200))
-                    }
+                    tabExitTransition(
+                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
+                        reduceMotion = reduceMotion,
+                    )
                 },
-                popEnterTransition = { fadeIn(tween(200)) },
-                popExitTransition = {
-                    slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 4 } +
-                        fadeOut(tween(200))
-                },
+                popEnterTransition = { popEnterTransition(reduceMotion) },
+                popExitTransition = { popExitTransition(reduceMotion) },
             ) {
                 LibraryScreen(
                     onPlay = { songs, index ->
@@ -453,7 +517,15 @@ fun NCMusicApp() {
                     onBack = { navController.popBackStack() },
                     onOpenEq = { navController.navigate(Routes.EQ) },
                     onOpenAbout = { navController.navigate(Routes.ABOUT) },
-                    onOpenGroup = { navController.navigate(Routes.settingsGroup(it.id)) },
+                    // 「关于」不需要先进入分类子页再点「查看详细信息」——
+                    // 它本身就是一页静态信息，直接跳到详细页，少一次点击。
+                    onOpenGroup = { group ->
+                        if (group == SettingsGroup.ABOUT) {
+                            navController.navigate(Routes.ABOUT)
+                        } else {
+                            navController.navigate(Routes.settingsGroup(group.id))
+                        }
+                    },
                 )
             }
             composable(
@@ -519,6 +591,33 @@ fun NCMusicApp() {
                         },
             expanded = playerOpen,
         )
+    }
+
+    // Snackbar 放在最外层、播放器之后：播放器是同树全屏覆盖层，
+    // 若把 SnackbarHost 放进 Scaffold，展开播放器时提示会被整页盖住。
+    val snackbarBottom = systemNavigationBottom + when {
+        playerOpen -> 16.dp
+        showMiniPlayer -> 80.dp + 72.dp + 8.dp
+        showBottomBar -> 80.dp + 8.dp
+        else -> 16.dp
+    }
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(start = 16.dp, end = 16.dp, bottom = snackbarBottom),
+    )
+    AnimatedVisibility(
+        visible = splashVisible,
+        enter = androidx.compose.animation.EnterTransition.None,
+        exit = fadeOut(
+            animationSpec = tween(Md3Motion.Medium1, easing = Md3Motion.StandardAccelerate),
+        ) + scaleOut(
+            targetScale = 0.985f,
+            animationSpec = tween(Md3Motion.Medium1, easing = Md3Motion.EmphasizedAccelerate),
+        ),
+    ) {
+        StartupScreen(progress = startupProgress)
     }
     }
 

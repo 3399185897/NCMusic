@@ -1,6 +1,5 @@
 package com.buddy.ncmusic.ui.components
 
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -27,6 +26,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.buddy.ncmusic.ui.util.Md3Motion
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import kotlin.math.PI
 import kotlin.math.sin
 
@@ -69,6 +70,7 @@ fun WaveProgressBar(
     strokeWidth: Dp = 3.5.dp,
     dotRadius: Dp = 5.5.dp,
 ) {
+    val reduceMotion = rememberReduceMotion()
     val density = LocalDensity.current
     val ampTargetPx = with(density) { amplitude.toPx() }
     val wavePx = with(density) { wavelength.toPx() }
@@ -77,8 +79,8 @@ fun WaveProgressBar(
 
     // ---------- 相位：播放时持续累加，暂停时冻结在当前位置 ----------
     var phase by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(isPlaying) {
-        if (!isPlaying) return@LaunchedEffect
+    LaunchedEffect(isPlaying, reduceMotion) {
+        if (!isPlaying || reduceMotion) return@LaunchedEffect
         var lastFrame = withFrameNanos { it }
         while (true) {
             withFrameNanos { now ->
@@ -92,8 +94,11 @@ fun WaveProgressBar(
 
     // ---------- 波幅：暂停时衰减为 0，波形自然摊平成直线 ----------
     val waveAmp by animateFloatAsState(
-        targetValue = if (isPlaying) ampTargetPx else 0f,
-        animationSpec = tween(durationMillis = 380, easing = FastOutSlowInEasing),
+        targetValue = if (isPlaying && !reduceMotion) ampTargetPx else 0f,
+        animationSpec = tween(
+            durationMillis = Md3Motion.Medium3,
+            easing = Md3Motion.Standard,
+        ),
         label = "waveAmp",
     )
 

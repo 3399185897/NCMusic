@@ -12,6 +12,8 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -19,6 +21,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.buddy.ncmusic.ui.util.Md3Motion
+
+private data class ScrollMetrics(
+    val totalItems: Int,
+    val visibleCount: Int,
+    val firstIndex: Int,
+)
 
 /**
  * 列表垂直滚动指示条（右侧浮动）。
@@ -47,36 +56,52 @@ fun VerticalScrollIndicator(
     indicatorWidth: Dp = 3.dp,
     minIndicatorHeight: Dp = 40.dp,
 ) {
-    val layoutInfo = listState.layoutInfo
-    val totalItems = layoutInfo.totalItemsCount
-    val visibleItems = layoutInfo.visibleItemsInfo
+    // 先把布局信息压缩成只影响指示条本身的三个值。
+    // 直接在组合中读取 layoutInfo 会让指示条在滚动时逐帧重组；
+    // derivedStateOf 只在真正影响滑块几何的字段变化时通知下游。
+    val metrics by remember(listState) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            ScrollMetrics(
+                totalItems = info.totalItemsCount,
+                visibleCount = info.visibleItemsInfo.size,
+                firstIndex = info.visibleItemsInfo.firstOrNull()?.index ?: 0,
+            )
+        }
+    }
+    val scrolling by remember(listState) {
+        derivedStateOf { listState.isScrollInProgress }
+    }
+    val totalItems = metrics.totalItems
+    val visibleCount = metrics.visibleCount
 
     // 内容未超出视口时不显示
-    if (totalItems == 0 || visibleItems.isEmpty() || totalItems <= visibleItems.size) return
+    if (totalItems == 0 || visibleCount == 0 || totalItems <= visibleCount) return
 
-    val firstIndex = visibleItems.first().index
-    val visibleCount = visibleItems.size
     val scrollableCount = (totalItems - visibleCount).coerceAtLeast(1)
 
     // 滑块长度比例（内容越多越短）
     val thumbFraction = (visibleCount.toFloat() / totalItems).coerceIn(0.06f, 1f)
     // 滑块位置比例
-    val offsetFraction = (firstIndex.toFloat() / scrollableCount).coerceIn(0f, 1f)
+    val offsetFraction = (metrics.firstIndex.toFloat() / scrollableCount).coerceIn(0f, 1f)
 
     val animatedOffset by animateFloatAsState(
         targetValue = offsetFraction,
-        animationSpec = tween(120),
+        animationSpec = tween(Md3Motion.Short2, easing = Md3Motion.Standard),
         label = "scrollOffset",
     )
     val animatedFraction by animateFloatAsState(
         targetValue = thumbFraction,
-        animationSpec = tween(200),
+        animationSpec = tween(Md3Motion.Short4, easing = Md3Motion.Standard),
         label = "scrollThumb",
     )
     // 滚动时淡入，停止后淡出
     val animatedAlpha by animateFloatAsState(
-        targetValue = if (listState.isScrollInProgress) 1f else 0f,
-        animationSpec = tween(if (listState.isScrollInProgress) 150 else 500),
+        targetValue = if (scrolling) 1f else 0f,
+        animationSpec = tween(
+            if (scrolling) Md3Motion.Short3 else Md3Motion.Medium2,
+            easing = Md3Motion.Standard,
+        ),
         label = "scrollAlpha",
     )
 

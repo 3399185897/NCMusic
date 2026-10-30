@@ -2,15 +2,12 @@ package com.buddy.ncmusic.ui.components
 
 import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.aspectRatio
-import com.buddy.ncmusic.ui.theme.AppShapes
-import androidx.compose.ui.unit.Dp
+import com.buddy.ncmusic.ui.theme.contrastOn
+import com.buddy.ncmusic.ui.util.Md3Motion
+import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.material3.FilledIconButton
@@ -23,7 +20,6 @@ import coil.imageLoader
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import androidx.compose.animation.core.Animatable
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -36,9 +32,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import android.content.Intent
-import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -54,20 +48,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -77,7 +69,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -142,18 +133,19 @@ fun rememberBottomSafeSpace(): androidx.compose.ui.unit.Dp {
     return if (hasSong) 84.dp else 8.dp
 }
 
-/** 带按压缩放动效的 IconButton（全局统一交互） */
+/** 带轻量按压缩放动效的 IconButton（Material 3 交互节奏，不使用弹跳过冲）。 */
 @Composable
 fun BouncyIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
+    val reduceMotion = rememberReduceMotion()
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.82f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        targetValue = if (pressed && !reduceMotion) 0.94f else 1f,
+        animationSpec = tween(Md3Motion.Short2, easing = Md3Motion.Standard),
         label = "bouncy",
     )
     IconButton(
@@ -193,64 +185,67 @@ fun SongListItem(
     // 仅在「当前歌曲且正在播放」时显示跳动动效
     val isCurrent = currentSongId == song.id && playing
 
-    Row(
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .clip(AppShapes.of(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .combinedClickable(onClick = onClick, onLongClick = { showDetail = true })
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 16.dp, vertical = 4.dp),
     ) {
-        CoverImage(
-            url = song.coverUrl,
-            modifier = Modifier.size(50.dp).clip(AppShapes.of(10.dp)),
-            contentDescription = song.name,
-        )
-        Spacer(Modifier.width(12.dp))
-        if (isCurrent) {
-            PlayingIndicator(color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(8.dp))
-        }
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = song.name,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = song.artistNames,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                modifier = if (onArtistClick != null) {
-                    Modifier.clickable { song.artists.firstOrNull()?.id?.let(onArtistClick) }
-                } else {
-                    Modifier
-                },
-            )
-        }
-        // 详情按钮：窄长的竖条圆角矩形（瘦高），底色随主题色
-        Box(
+        Row(
             modifier = Modifier
-                .size(width = 21.dp, height = 37.dp)
-                .clip(AppShapes.of(9.dp))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.13f))
-                .clickable { showDetail = true },
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = { showDetail = true })
+                .heightIn(min = 68.dp)
+                .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                imageVector = Icons.Default.MoreVert,
-                contentDescription = "歌曲信息",
-                modifier = Modifier.size(17.dp),
-                tint = MaterialTheme.colorScheme.primary,
+            CoverImage(
+                url = song.coverUrl,
+                modifier = Modifier.size(50.dp).clip(MaterialTheme.shapes.medium),
+                contentDescription = song.name,
             )
+            Spacer(Modifier.width(12.dp))
+            if (isCurrent) {
+                PlayingIndicator(color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = song.name,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = song.artistNames,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = if (onArtistClick != null) {
+                        Modifier.clickable { song.artists.firstOrNull()?.id?.let(onArtistClick) }
+                    } else {
+                        Modifier
+                    },
+                )
+            }
+            // 触控目标必须至少 48×48dp；原先的 21×37dp 视觉条既难点击，
+            // 也不符合 Material 3 / Android 无障碍要求。
+            IconButton(
+                onClick = { showDetail = true },
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "歌曲信息",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -258,7 +253,6 @@ fun SongListItem(
 /** 歌曲详情对话框（长按列表项或点击右侧三点触发） */
 @Composable
 fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
-    val scope = rememberCoroutineScope()
     val shareIntentContext = LocalContext.current
     var showQualityPicker by remember { mutableStateOf(false) }
 
@@ -268,33 +262,27 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
             title = { Text("选择下载音质") },
             text = {
                 Column {
-                    // 与播放器音质面板**同一口径**：官方展示的档位、
-                    // 按高低排序、超出该曲目能力的置灰。
-                    // （download 走同一套 level token，两边不一致会让用户困惑）
+                    // 与播放器音质面板同一口径：全量列出官方档位、按高低排序。
+                    // 是否真能拿到由服务端按账号权限裁决，失败会提示。
                     AudioQuality.visibleDescending.forEach { q ->
-                        val available = AudioQuality.availableFor(q.level, song.maxBr)
                         val sizeText = estimateSizeMb(song.duration, q.kbps)
                             .let { if (it > 0) "约 %.1f MB".format(it) else "大小未知" }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable(enabled = available) {
+                                .heightIn(min = 48.dp)
+                                .clickable {
                                     showQualityPicker = false
                                     // 交给全局控制器：进度在对话框与播放器面板间共享
-                                    DownloadController.download(song, q.level, scope)
+                                    DownloadController.download(song, q.level)
                                 }
                                 .padding(vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                // 名称与规格都用官方文案
-                                text = if (available) q.label else "${q.label}（本曲不支持）",
+                                text = q.label,
                                 modifier = Modifier.weight(1f),
-                                color = if (available) {
-                                    MaterialTheme.colorScheme.onSurface
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                                },
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
                                 text = sizeText,
@@ -303,6 +291,12 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                             )
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "下载音质由当前账号的会员权益决定；应用不会绕过平台版权限制。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             },
             confirmButton = {
@@ -369,7 +363,7 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                         )
                     }
                     runCatching {
-                        shareIntentContext?.startActivity(
+                        shareIntentContext.startActivity(
                             Intent.createChooser(share, "分享歌曲")
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                         )
@@ -420,31 +414,32 @@ private fun formatDuration(ms: Long): String {
 @Composable
 fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, modifier: Modifier = Modifier) {
     // 封面与文字合成一个独立卡片块（有底色与圆角，而非漂浮在页面背景上）
-    Column(
-        modifier = modifier
-            .width(142.dp)
-            .clip(AppShapes.of(18.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .clickable(onClick = onClick)
-            .padding(8.dp),
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = modifier.width(142.dp),
     ) {
-        CoverImage(
-            url = playlist.coverImgUrl,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(AppShapes.of(13.dp)),
-            contentDescription = playlist.name,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = playlist.name,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 3.dp, vertical = 2.dp),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.Medium,
-        )
+        Column(Modifier.padding(8.dp)) {
+            CoverImage(
+                url = playlist.coverImgUrl,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(MaterialTheme.shapes.medium),
+                contentDescription = playlist.name,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = playlist.name,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
     }
 }
 
@@ -453,7 +448,7 @@ fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, modifier: Modifier = M
 fun SectionTitle(title: String, modifier: Modifier = Modifier) {
     Text(
         text = title,
-        modifier = modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = modifier.padding(horizontal = 16.dp, vertical = 10.dp),
         style = MaterialTheme.typography.titleLarge,
         fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.primary,
@@ -463,32 +458,37 @@ fun SectionTitle(title: String, modifier: Modifier = Modifier) {
 /** 正在播放动效：三条跳动的竖线 */
 @Composable
 fun PlayingIndicator(color: Color, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "playing")
-    val bars = listOf(0, 1, 2).map { i ->
-        transition.animateFloat(
-            initialValue = 0.28f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 420 + i * 130,
-                    easing = LinearEasing,
+    val reduceMotion = rememberReduceMotion()
+    val barHeights: List<Float> = if (reduceMotion) {
+        listOf(0.48f, 0.72f, 0.58f)
+    } else {
+        val transition = rememberInfiniteTransition(label = "playing")
+        List(3) { i ->
+            transition.animateFloat(
+                initialValue = 0.28f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 520 + i * 140,
+                        easing = LinearEasing,
+                    ),
+                    repeatMode = RepeatMode.Reverse,
                 ),
-                repeatMode = RepeatMode.Reverse,
-            ),
-            label = "bar$i",
-        )
+                label = "bar$i",
+            ).value
+        }
     }
     Row(
         modifier = modifier.height(16.dp),
         verticalAlignment = Alignment.Bottom,
         horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        bars.forEach { h ->
+        barHeights.forEach { height ->
             Box(
                 modifier = Modifier
                     .width(3.dp)
-                    .fillMaxHeight(h.value)
-                    .clip(AppShapes.of(2.dp))
+                    .fillMaxHeight(height)
+                    .clip(MaterialTheme.shapes.extraSmall)
                     .background(color),
             )
         }
@@ -527,9 +527,6 @@ fun ErrorView(message: String, onRetry: () -> Unit, modifier: Modifier = Modifie
     }
 }
 
-/** 悬浮岛显隐动画的统一缓动曲线 */
-private val EASING = FastOutSlowInEasing
-
 /**
  * 底部悬浮岛播放条（胶囊造型）。
  *
@@ -537,8 +534,8 @@ private val EASING = FastOutSlowInEasing
  * - **胶囊外形**：大圆角 + 投影，四周留边悬浮于列表之上
  * - **专辑取色**：背景取自当前封面主色的淡化版本
  * - **圆形封面**（非圆角方形）
- * - **三个圆形控件**：上一首 / 下一首为浅色圆底，
- *   播放暂停为**实心专辑色圆底 + 白色图标**，形成视觉焦点
+ * - **三个圆角控件**：上一首 / 下一首为 tonal icon button，
+ *   播放暂停为实心专辑色按钮，并按背景亮度自动选择高对比前景
  * - 左右滑动切歌
  *
  * @param visible 是否可见。
@@ -573,8 +570,8 @@ fun MiniPlayer(
     }
     val accent = coverColor ?: MaterialTheme.colorScheme.primary
     // 专辑色淡染表面：既保留专辑个性，又保证前景文字对比度
-    val containerColor = accent.copy(alpha = 0.30f)
-        .compositeOver(MaterialTheme.colorScheme.surface)
+    val containerColor = accent.copy(alpha = 0.18f)
+        .compositeOver(MaterialTheme.colorScheme.surfaceContainerHigh)
     val onContainer = MaterialTheme.colorScheme.onSurface
 
     // 播放进度：供环绕封面的圆环使用。
@@ -602,20 +599,23 @@ fun MiniPlayer(
     // 动画就只驱动**绘制阶段**，每帧只重绘、不重组 —— 这是 Compose 动画的关键性能惯例。
     val visibilityState = animateFloatAsState(
         targetValue = if (visible) 1f else 0f,
-        animationSpec = tween(durationMillis = if (visible) 220 else 160, easing = EASING),
+        animationSpec = tween(
+            durationMillis = if (visible) Md3Motion.Medium1 else Md3Motion.Short4,
+            easing = if (visible) Md3Motion.EmphasizedDecelerate else Md3Motion.EmphasizedAccelerate,
+        ),
         label = "miniPlayerVisibility",
     )
     val hideOffsetPx = with(LocalDensity.current) { 28.dp.toPx() }
+    val swipeThresholdPx = with(LocalDensity.current) { 56.dp.toPx() }
 
     Surface(
-        shape = AppShapes.of(30.dp),
+        shape = MaterialTheme.shapes.extraLarge,
         color = containerColor,
-        // 不加阴影：阴影会在岛的圆角外形成一层灰色遮挡，
-        // 这里希望四周完全透出下层内容
-        shadowElevation = 0.dp,
+        tonalElevation = 1.dp,
+        shadowElevation = 1.dp,
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 4.dp)
             .graphicsLayer {
                 // 在绘制阶段读取动画值：每帧只重绘，不触发重组
                 val v = visibilityState.value
@@ -633,8 +633,8 @@ fun MiniPlayer(
                         detectHorizontalDragGestures(
                             onDragEnd = {
                                 when {
-                                    dragAccum < -70f -> PlaybackManager.next()
-                                    dragAccum > 70f -> PlaybackManager.previous()
+                                    dragAccum < -swipeThresholdPx -> PlaybackManager.next()
+                                    dragAccum > swipeThresholdPx -> PlaybackManager.previous()
                                 }
                                 dragAccum = 0f
                                 dragOffset = 0f
@@ -690,27 +690,34 @@ fun MiniPlayer(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.bodySmall,
-                        color = onContainer.copy(alpha = 0.65f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
 
-                // 上一首：浅色圆底
-                CircleControlButton(
-                    icon = Icons.Default.SkipPrevious,
-                    contentDescription = "上一首",
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                    contentColor = onContainer,
+                // MD3 的 tonal icon button：视觉层级低于播放键，但仍保留 48dp 触控目标。
+                FilledTonalIconButton(
                     onClick = { PlaybackManager.previous() },
-                )
-                Spacer(Modifier.width(6.dp))
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "上一首",
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
 
-                // 播放 / 暂停：实心专辑色圆底 + 白色图标（视觉焦点）
+                // 播放 / 暂停：实心专辑色圆底，前景按亮度自动选择黑白。
                 FilledIconButton(
                     onClick = { PlaybackManager.togglePlayPause() },
-                    modifier = Modifier.size(46.dp),
+                    modifier = Modifier.size(48.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = accent,
-                        contentColor = Color.White,
+                        contentColor = accent.contrastOn(),
                     ),
                 ) {
                     if (loading) {
@@ -721,7 +728,7 @@ fun MiniPlayer(
                         // 因此容器取 28dp 才能得到与原来 22dp 圆环相当的分量。
                         ExpressiveLoadingIndicator(
                             modifier = Modifier.size(28.dp),
-                            color = Color.White,
+                            color = accent.contrastOn(),
                         )
                     } else {
                         Icon(
@@ -732,45 +739,24 @@ fun MiniPlayer(
                         )
                     }
                 }
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(4.dp))
 
-                // 下一首：浅色圆底
-                CircleControlButton(
-                    icon = Icons.Default.SkipNext,
-                    contentDescription = "下一首",
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                    contentColor = onContainer,
+                FilledTonalIconButton(
                     onClick = { PlaybackManager.next() },
-                )
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "下一首",
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
             }
 
-    }
-}
-
-/** 浅色圆底图标按钮（用于上一首 / 下一首） */
-@Composable
-private fun CircleControlButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    containerColor: Color,
-    contentColor: Color,
-    onClick: () -> Unit,
-    size: Dp = 40.dp,
-) {
-    Box(
-        modifier = Modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(containerColor)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            modifier = Modifier.size(21.dp),
-            tint = contentColor,
-        )
     }
 }
 

@@ -1,6 +1,5 @@
 package com.buddy.ncmusic.util
 
-import com.buddy.ncmusic.data.model.Song
 
 /**
  * 会员等级标记，用于在音质列表中显示与官方一致的徽标。
@@ -63,11 +62,13 @@ enum class AudioQuality(
     /** 该档位的估计码率（kbps），仅用于下载体积估算；0 表示不适用 */
     val kbps: Int,
     /**
-     * 码率下限（bps）。服务端 `maxbr` 达到该值即认为该曲支持此档。
+     * 该档位的参考码率下限（bps），仅供了解档位含义。
      *
-     * **`0` 表示不参与过滤** —— 环绕声 / 全景声类档位在歌曲对象的
-     * `h/m/l/sq/hr` 里没有对应字段，无从判断，故一律视为可用
-     * （宁可多列，也好过把能播的档位藏起来）。
+     * ⚠️ **不要**用它判断「这首歌能不能给这个档位」——
+     * 歌曲对象（尤其列表接口）经常缺失 `hr` / `maxbr` 字段，
+     * 由此推算的码率必然偏低；曾经据此在 UI 上禁用高清臻音，
+     * 连 VIP 用户也选不了。音质是否可得由**服务端**按账号权限裁决：
+     * 客户端全量列出，请求失败走降级链即可。
      */
     val minBr: Int,
     /** 是否在「当前歌曲音质」列表中展示 */
@@ -178,53 +179,6 @@ enum class AudioQuality(
         /** 由 level 字符串查档位 */
         fun of(level: String): AudioQuality? = entries.firstOrNull { it.level == level }
 
-        /**
-         * [level] 是否在该曲目可提供的范围内。
-         *
-         * `maxBr <= 0`（服务端未给出码率）时一律返回 `true` ——
-         * 无从判断就不要替用户做决定。
-         */
-        fun availableFor(level: String, maxBr: Int): Boolean {
-            val q = of(level) ?: return true
-            if (maxBr <= 0) return true
-            if (q.minBr == 0) return true
-            return q.minBr <= maxBr
-        }
-
-        /**
-         * 某曲目支持的档位（含不展示项）。
-         *
-         * 下载器用它过滤可选项；界面则用
-         * [visibleDescending] + [availableFor] 组合，
-         * 以便「列出全部但禁用不可用项」。
-         */
-        fun supportedBy(maxBr: Int): List<AudioQuality> =
-            if (maxBr <= 0) all else all.filter { availableFor(it.level, maxBr) }
-
-        /** 某曲目可得的**最高**档位；未知时返回 null */
-        fun highestOf(maxBr: Int): AudioQuality? =
-            if (maxBr <= 0) null
-            else visibleDescending.firstOrNull { availableFor(it.level, maxBr) }
-
-        /** 把 level 收敛到 [maxBr] 允许的最高档 */
-        fun clamp(level: String, maxBr: Int): String {
-            if (maxBr <= 0) return level
-            if (availableFor(level, maxBr)) return level
-            return visibleDescending.firstOrNull { availableFor(it.level, maxBr) }?.level
-                ?: "standard"
-        }
     }
 }
 
-/**
- * 供播放器显示：当前曲目的音频规格，**文案与官方一致**。
- *
- * 按该曲目**可得的最高档位**推导，而非用户当前选择的档位 ——
- * 后者可能因账号权限拿不到，那样显示的规格会与实听不符。
- * 服务端未给出码率时返回 null（不显示，好过显示错误信息）。
- */
-fun Song.audioSpecText(): String? {
-    if (maxBr <= 0) return null
-    val q = AudioQuality.highestOf(maxBr) ?: return null
-    return q.specText
-}
