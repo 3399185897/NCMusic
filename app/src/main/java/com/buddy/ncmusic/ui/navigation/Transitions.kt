@@ -1,29 +1,37 @@
 package com.buddy.ncmusic.ui.navigation
 
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import com.buddy.ncmusic.ui.util.Md3Motion
 
 /**
  * Material 3 页面转场。
  *
- * 使用 M3 官方的 emphasized decelerate / emphasized accelerate 曲线：
- * - 进入由短距离位移 + 淡入组成，避免整页长距离滑动带来的大面积重绘；
- * - 退出比进入更快，形成明确的层级与方向感；
- * - 系统开启“移除动态效果”时统一退化为瞬时切换。
+ * 采用 SukiSU（ViewPager2 / shared-axis）的**横向推入**：
+ * - 新页自右侧推入、旧页向左退 1/4 屏，形成方向一致的"翻页"感；
+ * - 位移取 1/4 屏而非全屏：全屏位移会迫使两页整宽重绘，长列表页掉帧；
+ * - 系统开启「移除动态效果」时统一退化为瞬时切换。
  */
 
 fun enterTransition(reduceMotion: Boolean = false): EnterTransition =
+    // Shared-axis X：新页从右侧推入，同时轻微淡入。
+    //
+    // 之前用「顺序化淡入淡出」，用户反馈"不像翻页"。SukiSU 的二级页
+    // 是横向推入（ViewPager2 / shared axis），这里对齐同一手感：
+    // 位移只取 1/4 屏 —— 全屏位移会让两页同时重绘整宽，长列表页掉帧明显，
+    // 1/4 屏已经足够表达"从右边过来"的方向感。
     slideInHorizontally(
         animationSpec = Md3Motion.spatial(
             reduceMotion,
-            Md3Motion.Medium3,
+            Md3Motion.Medium2,
             Md3Motion.EmphasizedDecelerate,
         ),
         initialOffsetX = { it / 4 },
@@ -36,29 +44,31 @@ fun enterTransition(reduceMotion: Boolean = false): EnterTransition =
     )
 
 fun exitTransition(reduceMotion: Boolean = false): ExitTransition =
+    // 旧页向左退 1/4 屏并淡出，与新页形成推入关系
     slideOutHorizontally(
         animationSpec = Md3Motion.spatial(
             reduceMotion,
-            Md3Motion.Short4,
+            Md3Motion.Medium2,
             Md3Motion.EmphasizedAccelerate,
         ),
-        targetOffsetX = { -it / 8 },
+        targetOffsetX = { -it / 4 },
     ) + fadeOut(
         animationSpec = Md3Motion.effects(
             reduceMotion,
-            Md3Motion.Short3,
+            Md3Motion.Short4,
             Md3Motion.StandardAccelerate,
         ),
     )
 
 fun popEnterTransition(reduceMotion: Boolean = false): EnterTransition =
+    // 返回：上一页从左侧回到原位
     slideInHorizontally(
         animationSpec = Md3Motion.spatial(
             reduceMotion,
-            Md3Motion.Medium3,
+            Md3Motion.Medium2,
             Md3Motion.EmphasizedDecelerate,
         ),
-        initialOffsetX = { -it / 5 },
+        initialOffsetX = { -it / 4 },
     ) + fadeIn(
         animationSpec = Md3Motion.effects(
             reduceMotion,
@@ -71,54 +81,17 @@ fun popExitTransition(reduceMotion: Boolean = false): ExitTransition =
     slideOutHorizontally(
         animationSpec = Md3Motion.spatial(
             reduceMotion,
-            Md3Motion.Short4,
-            Md3Motion.EmphasizedAccelerate,
-        ),
-        targetOffsetX = { it / 8 },
-    ) + fadeOut(
-        animationSpec = Md3Motion.effects(
-            reduceMotion,
-            Md3Motion.Short3,
-            Md3Motion.StandardAccelerate,
-        ),
-    )
-
-/** 底部 Tab 的共享轴横向转场；[forward] 表示从低序号向高序号切换。 */
-fun tabEnterTransition(forward: Boolean, reduceMotion: Boolean = false): EnterTransition {
-    val direction = if (forward) 1 else -1
-    return slideInHorizontally(
-        animationSpec = Md3Motion.spatial(
-            reduceMotion,
             Md3Motion.Medium2,
-            Md3Motion.EmphasizedDecelerate,
-        ),
-        initialOffsetX = { direction * it / 6 },
-    ) + fadeIn(
-        animationSpec = Md3Motion.effects(
-            reduceMotion,
-            Md3Motion.Short4,
-            Md3Motion.StandardDecelerate,
-        ),
-    )
-}
-
-fun tabExitTransition(forward: Boolean, reduceMotion: Boolean = false): ExitTransition {
-    val direction = if (forward) -1 else 1
-    return slideOutHorizontally(
-        animationSpec = Md3Motion.spatial(
-            reduceMotion,
-            Md3Motion.Short4,
             Md3Motion.EmphasizedAccelerate,
         ),
-        targetOffsetX = { direction * it / 10 },
+        targetOffsetX = { it / 4 },
     ) + fadeOut(
         animationSpec = Md3Motion.effects(
             reduceMotion,
-            Md3Motion.Short3,
+            Md3Motion.Short4,
             Md3Motion.StandardAccelerate,
         ),
     )
-}
 
 // ---------------- 播放页：自底部升起 ----------------
 

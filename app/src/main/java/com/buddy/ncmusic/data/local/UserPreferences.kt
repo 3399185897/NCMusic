@@ -25,10 +25,32 @@ data class UserState(
     val themeMode: String = "system",
     /** 是否启用莫奈动态取色 */
     val dynamicColor: Boolean = true,
+    /** 深色下是否使用 AMOLED 纯黑背景 */
+    val amoled: Boolean = false,
     /** 自定义主题色（ARGB Long，0 = 未设置） */
     val customColor: Long = 0L,
+    /** 配色风格（PaletteStyle.key），仅在自选主题色下生效 */
+    val paletteStyle: String = "TonalSpot",
+    /** 色彩标准（ColorStandard.key）：SPEC_2021 / SPEC_2025 */
+    val colorSpec: String = "SPEC_2021",
+    /** 自定义背景图的本地文件路径（空 = 未设置） */
+    val customBackground: String = "",
     /** 底栏顶部是否使用圆弧；false = 平角 */
     val bottomBarRounded: Boolean = true,
+    /**
+     * 底栏样式。
+     *
+     * - `classic`  平铺导航栏（Material 默认），选中项由系统指示器标注
+     * - `rounded`  与 classic 相同，但顶角圆润（旧版行为，保留兼容）
+     * - `floating` 药丸式悬浮底栏：选中项横向展开显示文字（参考 SukiSU）
+     */
+    val bottomBarStyle: String = "rounded",
+    /**
+     * 迷你播放器（悬浮岛）与底栏之间的间距，单位 dp。
+     *
+     * 0 = 紧贴底栏；上限 40dp（再高会压到列表内容，也会让"悬浮"变成"漂浮"）。
+     */
+    val miniPlayerGap: Int = 8,
     /** 默认音质（兜底） */
     val quality: String = "standard",
     /** WiFi 下最高音质 */
@@ -117,8 +139,16 @@ class UserPreferences(private val context: Context) {
         val LEVEL = intPreferencesKey("account_level")
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
+        val AMOLED = booleanPreferencesKey("amoled")
         val CUSTOM_COLOR = longPreferencesKey("custom_color")
+        val PALETTE_STYLE = stringPreferencesKey("palette_style")
+        val COLOR_SPEC = stringPreferencesKey("color_spec")
+        val CUSTOM_BACKGROUND = stringPreferencesKey("custom_background")
         val BOTTOM_BAR_ROUNDED = booleanPreferencesKey("bottom_bar_rounded")
+        /** 底栏样式：classic / rounded / floating（见 BottomBarStyle） */
+        val BOTTOM_BAR_STYLE = stringPreferencesKey("bottom_bar_style")
+        /** 悬浮岛与底栏的间距（dp） */
+        val MINI_PLAYER_GAP = intPreferencesKey("mini_player_gap")
         val QUALITY = stringPreferencesKey("quality")
         val WIFI_QUALITY = stringPreferencesKey("wifi_quality")
         val MOBILE_QUALITY = stringPreferencesKey("mobile_quality")
@@ -157,8 +187,14 @@ class UserPreferences(private val context: Context) {
             level = p[Keys.LEVEL] ?: 0,
             themeMode = p[Keys.THEME_MODE] ?: "system",
             dynamicColor = p[Keys.DYNAMIC_COLOR] ?: true,
+            amoled = p[Keys.AMOLED] ?: false,
             customColor = p[Keys.CUSTOM_COLOR] ?: 0L,
+            paletteStyle = p[Keys.PALETTE_STYLE] ?: "TonalSpot",
+            colorSpec = p[Keys.COLOR_SPEC] ?: "SPEC_2021",
+            customBackground = p[Keys.CUSTOM_BACKGROUND] ?: "",
             bottomBarRounded = p[Keys.BOTTOM_BAR_ROUNDED] ?: true,
+            bottomBarStyle = p[Keys.BOTTOM_BAR_STYLE] ?: "rounded",
+            miniPlayerGap = p[Keys.MINI_PLAYER_GAP] ?: 8,
             quality = p[Keys.QUALITY] ?: "standard",
             wifiQuality = p[Keys.WIFI_QUALITY] ?: "exhigh",
             mobileQuality = p[Keys.MOBILE_QUALITY] ?: "higher",
@@ -329,12 +365,36 @@ class UserPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.DYNAMIC_COLOR] = enabled }
     }
 
+    suspend fun setAmoled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.AMOLED] = enabled }
+    }
+
+    suspend fun setPaletteStyle(style: String) {
+        context.dataStore.edit { it[Keys.PALETTE_STYLE] = style }
+    }
+
+    suspend fun setCustomBackground(path: String) {
+        context.dataStore.edit { it[Keys.CUSTOM_BACKGROUND] = path }
+    }
+
+    suspend fun setColorSpec(spec: String) {
+        context.dataStore.edit { it[Keys.COLOR_SPEC] = spec }
+    }
+
     suspend fun setCustomColor(argb: Long) {
         context.dataStore.edit { it[Keys.CUSTOM_COLOR] = argb }
     }
 
     suspend fun setBottomBarRounded(enabled: Boolean) {
         context.dataStore.edit { it[Keys.BOTTOM_BAR_ROUNDED] = enabled }
+    }
+
+    suspend fun setBottomBarStyle(style: String) {
+        context.dataStore.edit { it[Keys.BOTTOM_BAR_STYLE] = style }
+    }
+
+    suspend fun setMiniPlayerGap(gapDp: Int) {
+        context.dataStore.edit { it[Keys.MINI_PLAYER_GAP] = gapDp.coerceIn(0, 40) }
     }
 
     suspend fun setQuality(quality: String) {

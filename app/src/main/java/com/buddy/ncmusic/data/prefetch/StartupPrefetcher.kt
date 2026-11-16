@@ -49,24 +49,24 @@ object StartupPrefetcher {
             //     表现为「不随账号变化」「与官方客户端不一致」
             repo.ensureCookieRestored()
             val tasks = buildList<suspend () -> Unit> {
-                if (!ContentCache.isFresh() || ContentCache.toplist == null) {
+                if (!ContentCache.isFreshToplist()) {
                     add {
                         (repo.toplist() as? ApiResult.Success)?.data?.let(ContentCache::storeToplist)
                     }
                 }
-                if (!ContentCache.isFresh() || ContentCache.personalizedPlaylists == null) {
+                if (!ContentCache.isFreshPlaylists()) {
                     add {
                         (repo.personalizedPlaylists() as? ApiResult.Success)?.data
                             ?.let(ContentCache::storePersonalized)
                     }
                 }
-                if (!ContentCache.isFresh() || ContentCache.radarPlaylists == null) {
+                if (!ContentCache.isFreshRadar()) {
                     add {
                         (repo.radarPlaylists(limit = 7) as? ApiResult.Success)?.data
                             ?.let(ContentCache::storeRadar)
                     }
                 }
-                if (!ContentCache.isFresh() || ContentCache.hotWords == null) {
+                if (!ContentCache.isFreshHotWords()) {
                     add {
                         (repo.searchHot() as? ApiResult.Success)?.data
                             ?.let(ContentCache::storeHotWords)
@@ -81,7 +81,7 @@ object StartupPrefetcher {
                     }
                 }
                 if (isLoggedIn) {
-                    if (!ContentCache.isFresh() || ContentCache.dailySongs == null) {
+                    if (!ContentCache.isFreshDaily()) {
                         add {
                             (repo.recommendSongs() as? ApiResult.Success)?.data
                                 ?.let(ContentCache::storeDaily)

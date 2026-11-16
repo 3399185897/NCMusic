@@ -1,5 +1,6 @@
 package com.buddy.ncmusic.ui.theme
 
+import androidx.compose.runtime.remember
 import kotlin.math.pow
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -37,54 +38,68 @@ fun NCMusicTheme(
     dynamicColor: Boolean = true,
     // 自定义主题色（ARGB Long，0 = 未设置）
     customColor: Long = 0L,
+    // 配色风格（TonalSpot / Vibrant / Expressive …），仅在自选主题色下生效
+    paletteStyle: String = PaletteStyle.TonalSpot.key,
+    // 色彩标准（SPEC_2021 / SPEC_2025），影响主色 tone 与整体色度
+    colorSpec: String = ColorStandard.SPEC_2021.key,
+    // 深色下是否使用 AMOLED 纯黑背景
+    amoled: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     // 底色来源的优先级：**自定义色 > 莫奈取色 > 内置配色**。
     //
-    // ## 深色与取色不再互斥
-    //
-    // 原先这里是 `if (darkTheme) DarkColorScheme else ...` 的硬短路 ——
-    // 深色下无论取色/自定义色设成什么都走灰阶。结果两个开关必然互相压制：
-    // 开了深色，莫奈开关点了没反应；要能取色，就得关掉深色。
-    //
-    // 现在深色只决定**明暗**，取色只决定**色调来源**，两者正交：
-    // 深色 + 取色 → dynamicDarkColorScheme；深色 + 自定义 → 自定义色的深色变体。
+    // 深色只决定**明暗**，取色只决定**色调来源**，两者正交。
     val hasCustom = customColor != 0L
-    val base = when {
-        !hasCustom && dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            dynamicScheme(darkTheme)
+    val style = remember(paletteStyle) { PaletteStyle.of(paletteStyle) }
+    val requestedSpec = remember(colorSpec) { ColorStandard.of(colorSpec) }
+    // 风格不支持 SPEC_2025 时静默回退（同 SukiSU 的 effectiveFor）
+    val spec = remember(requestedSpec, style) { requestedSpec.effectiveFor(style) }
+    val dynamicAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val context = LocalContext.current
+
+    // 「跟随 Monet + 默认风格」时直接用系统取色方案；
+    // 其余情况以壁纸主色为种子重新展开（否则改风格界面无变化）。
+    val useSystemScheme = !hasCustom && dynamicColor && dynamicAvailable &&
+        style == PaletteStyle.TonalSpot && spec == ColorStandard.SPEC_2021 && !amoled
+
+    // ⚠️ 必须 remember。
+    //
+    // md3Scheme 一次要算 20 多个 tone，每个 tone 还要二分 20 次反解明度 ≈
+    // 400+ 次色彩空间换算；systemScheme 也要重新解析系统调色板。
+    // 这些原先都写在组合体里 —— 主题一旦重组（主界面任何偏好变化都会触发），
+    // 就在主线程重算整张调色板，正好落在页面切换的那一帧上。
+    val colorScheme = remember(customColor, dynamicColor, darkTheme, style, spec, useSystemScheme, amoled) {
+        when {
+            useSystemScheme -> systemScheme(context, darkTheme)
+            hasCustom -> md3Scheme(Color(customColor.toInt()), darkTheme, style, spec, amoled)
+            dynamicColor && dynamicAvailable ->
+                md3Scheme(Color(systemScheme(context, darkTheme).primary.value), darkTheme, style, spec, amoled)
+            darkTheme -> if (amoled) DarkColorScheme.amoledSurface() else DarkColorScheme
+            else -> LightColorScheme
         }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
     }
 
-    // 自定义主题色：按 MD3 的 tone 表生成**整套**配色。
-    //
-    // 原先这里手工 blend 各个 surface，只覆盖了 primary 系列：
-    // secondary 直接取种子色、tertiary 完全没填 —— 换主色后界面是"一色刷到底"，
-    // 次要强调与点缀仍是内置配色。现统一交给 md3Scheme() 按 tone 生成。
-    val colorScheme = if (hasCustom) {
-        md3Scheme(Color(customColor.toInt()), darkTheme)
-    } else {
-        base
-    }
+    // 换色时整张色板做 spring 过渡（对齐 SukiSU 的 ColorScheme.animateAsState）
+    val animatedScheme = colorScheme.animateAsState()
 
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = animatedScheme,
         typography = Typography,
         shapes = NCMusicShapes,
         content = content,
     )
 }
 
-@Composable
+/**
+ * 系统动态取色方案（非 Composable，便于在 `remember` 里缓存）。
+ *
+ * 之前是 `@Composable fun dynamicScheme()`，且一次组合里被调用两次
+ * （一次取底色、一次取种子色），每次都重新解析系统调色板。
+ */
 @RequiresApi(Build.VERSION_CODES.S)
-@SuppressLint("NewApi") // 调用方已用 Build.VERSION.SDK_INT 守卫；Compose 函数中 lint 无法跨函数推断
-private fun dynamicScheme(dark: Boolean): ColorScheme {
-    val context = LocalContext.current
-    // 按明暗选用对应的取色方案 —— 深色下用 light 版会让界面雪白
-    return if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-}
+@SuppressLint("NewApi")
+private fun systemScheme(context: android.content.Context, dark: Boolean): ColorScheme =
+    if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
 
 /** 按 alpha 将 overlay 混入 base，生成带主题色调的背景色 */
 /**
@@ -114,8 +129,19 @@ private fun tonal(
     val h = (hsv[0] + hueShift + 360f) % 360f
     val t = tone.coerceIn(0, 100)
 
-    // 钟形色度曲线
-    val bell = kotlin.math.sin(Math.PI.toFloat() * t / 100f).pow(1.3f)
+    // 钟形色度曲线。
+    //
+    // 指数从 1.3 降到 0.55：原曲线在 tone 94~98（surface / surfaceContainer）
+    // 处几乎归零 —— 实测 `#FDFBFD` 与纯白肉眼无差，于是**切换主题色时背景完全不变**，
+    // 用户看到的就是"颜色改了但界面没变"。
+    // 平方根形状在两端衰减更缓，高 tone 仍保留约 25%~35% 的色度，
+    // 背景会呈现清晰的色偏，而 tone 50 附近（outline）不受影响。
+    // 端点仍强制为 0：tone 100 必须是纯白，否则 onPrimary 会带色。
+    val bell = if (t <= 0 || t >= 100) {
+        0f
+    } else {
+        kotlin.math.sin(Math.PI.toFloat() * t / 100f).pow(0.55f)
+    }
     val sat = (hsv[1] * chromaScale * bell).coerceIn(0f, 1f)
 
     // 目标相对亮度：L* -> Y
@@ -154,62 +180,87 @@ private fun relativeLuminance(argb: Int): Float {
 /**
  * 由单个种子色生成一整套 MD3 配色。
  *
- * 各角色取固定的 tone（与 Material Theme Builder 的 baseline 一致）：
+ * ## 三个输入各管一件事
+ *
+ * - **seed**：色相与色度的起点
+ * - **[style]**：三组主色的色相偏移与色度分配（primary / secondary / tertiary）
+ * - **[spec]**：tone 取值与整体色度系数（2021 内敛 / 2025 明快）
+ *
+ * ## tone 取值
+ *
  * ```
- * primary             40 / 80        primaryContainer            90 / 30
- * secondary           40 / 80（色度 ×0.45）
- * tertiary            40 / 80（色相 +60°，色度 ×0.6）
- * surface             98 / 6         surfaceContainer*        100 → 90 递减
+ * primary        spec.primaryTone / 深色 primaryToneDark
+ * container      90 / 30（深色）
+ * surface        98 / 深色纯黑           surfaceContainer*  100 → 90 递减
+ * outline        50 / 80
  * ```
- * 深色主题的底色沿用本项目既定的**纯黑**（不掺主题色）。
+ *
+ * 深色主题的 background / surface 沿用本项目既定的**纯黑**；
+ * 其余容器色仍带主题色调，避免整屏只有黑白两色。
  * error 系列保持 MD3 标准红 —— 错误语义不应随主题色漂移。
  */
-private fun md3Scheme(seed: Color, dark: Boolean): ColorScheme {
-    fun p(tone: Int) = tonal(seed, tone)
-    fun s(tone: Int) = tonal(seed, tone, chromaScale = 0.45f)
-    fun t(tone: Int) = tonal(seed, tone, hueShift = 60f, chromaScale = 0.60f)
+private fun md3Scheme(
+    seed: Color,
+    dark: Boolean,
+    style: PaletteStyle,
+    spec: ColorStandard,
+    amoled: Boolean = false,
+): ColorScheme {
+    val cs = spec.chromaScale
+    fun p(tone: Int) = tonal(seed, tone, style.primaryHue, style.primaryChroma * cs)
+    fun s(tone: Int) = tonal(seed, tone, style.secondaryHue, style.secondaryChroma * cs)
+    fun t(tone: Int) = tonal(seed, tone, style.tertiaryHue, style.tertiaryChroma * cs)
+    fun n(tone: Int) = tonal(seed, tone, 0f, style.neutralChroma * cs)
 
     return if (dark) {
         LightColorScheme.copy(
-            primary = p(80), onPrimary = p(20),
-            primaryContainer = p(30), onPrimaryContainer = p(90),
-            secondary = s(80), onSecondary = s(20),
-            secondaryContainer = s(30), onSecondaryContainer = s(90),
-            tertiary = t(80), onTertiary = t(20),
-            tertiaryContainer = t(30), onTertiaryContainer = t(90),
-            background = Color(0xFF000000), onBackground = p(90),
-            surface = Color(0xFF000000), onSurface = p(90),
-            surfaceVariant = p(30), onSurfaceVariant = p(80),
-            surfaceContainerLowest = p(4),
-            surfaceContainerLow = p(10),
-            surfaceContainer = p(12),
-            surfaceContainerHigh = p(17),
-            surfaceContainerHighest = p(22),
-            outline = p(60), outlineVariant = p(30),
-            surfaceTint = p(80), inversePrimary = p(40),
-            inverseSurface = p(90), inverseOnSurface = p(20),
+            primary = p(spec.primaryToneDark), onPrimary = p(20),
+            primaryContainer = p(spec.primaryContainerToneDark), onPrimaryContainer = p(90),
+            secondary = s(spec.primaryToneDark), onSecondary = s(20),
+            secondaryContainer = s(spec.primaryContainerToneDark), onSecondaryContainer = s(90),
+            tertiary = t(spec.primaryToneDark), onTertiary = t(20),
+            tertiaryContainer = t(spec.primaryContainerToneDark), onTertiaryContainer = t(90),
+            // 深色底：**不是**纯黑，而是极低 tone 的中性色。
+            //
+            // 之前这里直接写死 #000000，导致「深色」与「深色·纯黑(AMOLED)」
+            // 看起来完全一样 —— AMOLED 失去了存在意义。
+            // 按 MD3 的深色规范，surface 取 tone 6；AMOLED 模式才压到真纯黑。
+            background = if (amoled) Color(0xFF000000) else n(6),
+            onBackground = n(90),
+            surface = if (amoled) Color(0xFF000000) else n(6),
+            onSurface = n(90),
+            surfaceVariant = n(30), onSurfaceVariant = n(80),
+            // AMOLED：页面级表面纯黑，容器保留极低 tone 以维持卡片层次
+            surfaceContainerLowest = Color(0xFF000000),
+            surfaceContainerLow = if (amoled) n(5) else n(10),
+            surfaceContainer = if (amoled) n(8) else n(12),
+            surfaceContainerHigh = if (amoled) n(11) else n(17),
+            surfaceContainerHighest = if (amoled) n(14) else n(22),
+            outline = n(60), outlineVariant = n(30),
+            surfaceTint = p(spec.primaryToneDark), inversePrimary = p(40),
+            inverseSurface = n(90), inverseOnSurface = n(20),
             error = Color(0xFFFFB4AB), onError = Color(0xFF690005),
             errorContainer = Color(0xFF93000A), onErrorContainer = Color(0xFFFFDAD6),
         )
     } else {
         LightColorScheme.copy(
-            primary = p(40), onPrimary = p(100),
-            primaryContainer = p(90), onPrimaryContainer = p(10),
-            secondary = s(40), onSecondary = s(100),
-            secondaryContainer = s(90), onSecondaryContainer = s(10),
-            tertiary = t(40), onTertiary = t(100),
-            tertiaryContainer = t(90), onTertiaryContainer = t(10),
-            background = p(98), onBackground = p(10),
-            surface = p(98), onSurface = p(10),
-            surfaceVariant = p(90), onSurfaceVariant = p(30),
-            surfaceContainerLowest = p(100),
-            surfaceContainerLow = p(96),
-            surfaceContainer = p(94),
-            surfaceContainerHigh = p(92),
-            surfaceContainerHighest = p(90),
-            outline = p(50), outlineVariant = p(80),
-            surfaceTint = p(40), inversePrimary = p(80),
-            inverseSurface = p(20), inverseOnSurface = p(95),
+            primary = p(spec.primaryTone), onPrimary = p(100),
+            primaryContainer = p(spec.primaryContainerTone), onPrimaryContainer = p(10),
+            secondary = s(spec.primaryTone), onSecondary = s(100),
+            secondaryContainer = s(spec.primaryContainerTone), onSecondaryContainer = s(10),
+            tertiary = t(spec.primaryTone), onTertiary = t(100),
+            tertiaryContainer = t(spec.primaryContainerTone), onTertiaryContainer = t(10),
+            background = n(98), onBackground = n(10),
+            surface = n(98), onSurface = n(10),
+            surfaceVariant = n(90), onSurfaceVariant = n(30),
+            surfaceContainerLowest = n(100),
+            surfaceContainerLow = n(96),
+            surfaceContainer = n(94),
+            surfaceContainerHigh = n(92),
+            surfaceContainerHighest = n(90),
+            outline = n(50), outlineVariant = n(80),
+            surfaceTint = p(spec.primaryTone), inversePrimary = p(80),
+            inverseSurface = n(20), inverseOnSurface = n(95),
         )
     }
 }
@@ -220,3 +271,32 @@ private fun blend(base: Color, overlay: Color, alpha: Float): Color = Color(
     blue = base.blue + (overlay.blue - base.blue) * alpha,
     alpha = 1f,
 )
+
+/**
+ * 风格预览用配色。
+ *
+ * 与 [NCMusicTheme] 走**同一套** [md3Scheme]，因此预览色与实际应用后的
+ * 结果完全一致 —— 预览不会"看起来选了 A、应用后是 B"。
+ */
+internal fun previewScheme(
+    seed: Long,
+    dark: Boolean,
+    style: PaletteStyle,
+    spec: ColorStandard,
+): ColorScheme = md3Scheme(Color(seed.toInt()), dark, style, spec)
+
+/**
+ * 取「Monet 种子色」——用于风格预览。
+ *
+ * 系统动态方案里的 `primary` 已经过 HCT 取样，色相与壁纸一致，
+ * 拿来当种子足够接近；重点是它**不随风格变化**，
+ * 因此预览带不会因为切换风格而整体漂移。
+ */
+@Composable
+internal fun rememberMonetSeed(dark: Boolean): Long? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+    val context = LocalContext.current
+    return remember(dark) {
+        systemScheme(context, dark).primary.toArgb().toLong() and 0xFFFFFFFFL
+    }
+}

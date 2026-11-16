@@ -61,7 +61,14 @@ class MusicRepository(private val prefs: UserPreferences) {
      * 无需再读 DataStore，但同样要置位就绪标记。
      */
     fun restoreCookie(cookie: String?) {
-        api.cookie = cookie?.takeIf { it.isNotBlank() }
+        val value = cookie?.takeIf { it.isNotBlank() }
+        if (value == null) {
+            // 启动时读到空 Cookie 有两种可能：确实未登录，或 DataStore 尚未就绪。
+            // 这里**不置位** cookieRestored —— 让首个账号级请求自己再读一次；
+            // 若确实未登录，那次读取同样得到空值并正常置位，只多一次内存读。
+            return
+        }
+        api.cookie = value
         cookieRestored = true
     }
 
@@ -90,10 +97,17 @@ class MusicRepository(private val prefs: UserPreferences) {
         cookieMutex.withLock {
             // 双重检查：可能在等锁期间已被其它协程完成
             if (cookieRestored) return
-            runCatching {
-                val cookie = prefs.userStateFlow.first().cookie
-                api.cookie = cookie.takeIf { it.isNotBlank() }
-            }
+            // ⚠️ 读取失败**不能**置位 cookieRestored。
+            //
+            // 原实现是 `runCatching { ... }; cookieRestored = true` ——
+            // DataStore 首次读取抛 IOException（升级安装后首次启动、
+            // 或文件正被写入时都有可能）会让这里直接标记"已恢复"，
+            // 但 api.cookie 是 null。于是整个进程都以**游客身份**发请求：
+            // 雷达歌单、推荐歌单返回通用数据，下拉刷新也一直是游客数据，
+            // 且因为标记已置位，**再没有任何时机重试** ——
+            // 用户只能退出登录再登一次才能恢复。
+            val state = runCatching { prefs.userStateFlow.first() }.getOrNull() ?: return
+            api.cookie = state.cookie.takeIf { it.isNotBlank() }
             cookieRestored = true
         }
     }
@@ -823,6 +837,16 @@ class MusicRepository(private val prefs: UserPreferences) {
     suspend fun likeSong(id: Long, like: Boolean): ApiResult<Boolean> = safeApiCall {
         ensureCookieRestored()
         api.likeSong(id, like)
+    }
+
+    /** 把歌曲加入 / 移出指定歌单 */
+    suspend fun manipulatePlaylistTracks(
+        playlistId: Long,
+        songId: Long,
+        add: Boolean,
+    ): ApiResult<Boolean> = safeApiCall {
+        ensureCookieRestored()
+        api.manipulatePlaylistTracks(playlistId, songId, add)
     }
 
     suspend fun likelist(uid: Long): ApiResult<List<Long>> = safeApiCall {

@@ -215,6 +215,15 @@ object PlaybackManager {
     @Volatile
     private var manualQuality: String? = null
 
+    /**
+     * 音频输出初始化失败（5001）是否已重试过。
+     *
+     * 只允许重试一次：重试是为了绕开失效的 audio session，
+     * 若重建播放器后仍然失败，说明是设备侧问题，再重试也只是循环报错。
+     */
+    @Volatile
+    private var audioTrackRetried = false
+
     /** 定时关闭任务 */
     private var sleepTimerJob: Job? = null
 
@@ -294,9 +303,51 @@ object PlaybackManager {
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // ============================================================
+            // 5001 = ERROR_CODE_AUDIO_TRACK_INIT_FAILED
+            //
+            // 之前误判成「CDN 拒绝该音质」，还据此做了自动降档 —— 但日志显示
+            // 真正的异常是：
+            //   java.lang.IllegalArgumentException: Invalid audio session ID -1
+            //   at android.media.AudioTrack$Builder.setSessionId
+            // 即**音频输出初始化**失败，与音质、与网络都无关。
+            // 降档对此毫无作用，反而会让用户白白损失音质，因此移除。
+            //
+            // 真正可行的恢复手段是重建播放器：新的 ExoPlayer 会拿到新的
+            // audio session，绕过已经失效的旧会话。只重试一次，避免死循环。
+            // ============================================================
+            if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED &&
+                !audioTrackRetried &&
+                currentIndex in _queue.indices
+            ) {
+                audioTrackRetried = true
+                runCatching {
+                    player.release()
+                    createPlayer()
+                }
+                scope.launch {
+                    playAt(currentIndex)
+                    _state.update {
+                        it.copy(noticeMessage = "音频输出已重新初始化")
+                    }
+                }
+                return
+            }
+            if (error.errorCode == PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED) {
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        isPlaying = false,
+                        errorMessage = "音频输出初始化失败（系统音频服务异常）：" +
+                            "请检查是否被其他应用独占，或重启设备后重试",
+                    )
+                }
+                return
+            }
+
+            // 其余错误：如实报错。
             // 原先只清 isLoading，不给任何原因 ——
             // 用户看到「转圈停了但没声音」，无法判断发生了什么。
-            // 现在统一转成可读文案，与「地址解析失败」走同一套提示。
             _state.update {
                 it.copy(
                     isLoading = false,
@@ -391,6 +442,35 @@ object PlaybackManager {
     fun playQueue(songs: List<Song>, startIndex: Int = 0) {
         if (songs.isEmpty()) return
         ensureInit()
+        val target = songs.getOrNull(startIndex) ?: return
+
+        // 点的是**当前正在播放的同一首歌**：续播，不从头开始。
+        //
+        // 之前的实现一律重建队列并 playAt，于是「在列表里点一下当前歌」
+        // 会把进度清零 —— 用户的意图显然不是"重听"，而是"回到播放页"。
+        // 只在真的播到中途时才续播：已经播完（或还没起播）的情况下，
+        // 重新点仍然应当从头播，否则点了没反应。
+        val sameSong = target.id == _state.value.song?.id &&
+            _queue.getOrNull(currentIndex)?.id == target.id
+        val midPlay = runCatching {
+            val pos = player.currentPosition
+            val dur = _state.value.duration
+            pos > 0 && (dur <= 0 || pos < dur - 1500)
+        }.getOrDefault(false)
+
+        if (sameSong && midPlay) {
+            // 队列可能来自另一个列表（如搜索结果 vs 歌单），同步成新的，
+            // 这样"下一首"仍然按用户刚点的上下文走
+            _queue.clear()
+            _queue.addAll(songs)
+            currentIndex = startIndex
+            if (!desiredPlaying) {
+                desiredPlaying = true
+                runCatching { player.play() }
+            }
+            return
+        }
+
         _queue.clear()
         _queue.addAll(songs)
         playAt(startIndex)
@@ -401,6 +481,8 @@ object PlaybackManager {
         if (index !in _queue.indices) return
         currentIndex = index
         val song = _queue[index]
+        // 换歌后允许再次尝试重建音频输出（设备可能已恢复）
+        if (song.id != _state.value.song?.id) audioTrackRetried = false
         // 标记进入准备流程：使 stop() 触发的 STATE_IDLE 不误清加载态
         preparingNewTrack = true
         // ⚠️ 此处**不再立即 stop()**。
@@ -592,13 +674,24 @@ object PlaybackManager {
         when (val r = repository.songUrl(song.id, requested)) {
             is ApiResult.Success -> {
                 val resolved = r.data
-                // 记录**真实命中**的档位
+                // 记录**真实命中**的档位（已按码率校正，见 DirectApi.levelOfBr）
                 _state.update { it.copy(quality = resolved.level) }
 
                 // 仅在**实际低于请求**时提示。
                 //
                 // 原先判据是「不相等」，于是「请求无损、服务端却给了 Hi-Res」
                 // 这种**升级**也会弹出「「无损」不可用」——完全反了。
+                // 服务端主动给了更高规格（如请求「无损」却下发 2.8Mbps 的 Hi-Res）。
+                // 这种"升级"不牺牲听感，但用户会疑惑"我明明选的是无损"——
+                // 明确告知实际规格，而不是让档位标签默默跳走。
+                if (!resolved.degraded && rankOf(resolved.level) > rankOf(resolved.requestedLevel)) {
+                    _state.update {
+                        it.copy(
+                            noticeMessage = "服务端返回了更高规格「${qualityLabelOf(resolved.level)}」，" +
+                                "已按该规格播放",
+                        )
+                    }
+                }
                 if (resolved.degraded) {
                     // 写入 noticeMessage 而非 errorMessage ——
                     // 后者会被随后的清理逻辑抹掉，且语义上这不是"错误"
@@ -722,7 +815,10 @@ object PlaybackManager {
         _state.update { it.copy(noticeMessage = null) }
     }
 
-    /** 决定当前使用的音质：手动选择优先，否则按网络类型（WiFi / 流量）自动取上限 */
+    /** 档位高低（越大越高）；未知档位视为最低 */
+    private fun rankOf(level: String): Int =
+        AudioQuality.of(level)?.let { AudioQuality.entries.indexOf(it) } ?: -1
+
     private suspend fun resolveQuality(): String {
         manualQuality?.let { return it }
         val ps = appContext.userPreferences.userStateFlow.first()

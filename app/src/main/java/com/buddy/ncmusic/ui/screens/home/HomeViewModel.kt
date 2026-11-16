@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -69,6 +71,17 @@ class HomeViewModel : ViewModel() {
     /** 下拉刷新中（供官方 PullToRefresh 组件绑定） */
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
+    /**
+     * 上次**刷新完成**的时刻（毫秒）。
+     *
+     * 网易云的雷达 / 推荐歌单是**按天生成**的：同一天内反复刷新，服务端返回的
+     * 就是同一批歌单。用户看不到内容变化，就会认为"刷新没反应"。
+     * 这里把刷新时刻暴露给页头，下拉后立刻显示「刚刚更新」——
+     * 让"请求确实发出并回来了"这件事可见，而不是靠内容变化去猜。
+     */
+    private val _lastRefreshedAt = MutableStateFlow(0L)
+    val lastRefreshedAt: StateFlow<Long> = _lastRefreshedAt.asStateFlow()
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
@@ -154,6 +167,46 @@ class HomeViewModel : ViewModel() {
             }
 
             _loading.value = false
+            retryPersonalizedIfEmpty()
+        }
+    }
+
+    /**
+     * 登录态兜底补载。
+     *
+     * 冷启动（尤其**覆盖升级后的首次启动**）存在一个时序窗口：
+     * `Application.onCreate` 里恢复 Cookie 的协程、首页 `load()` 的四个请求、
+     * 以及 DataStore 的首次磁盘读取三者并发。若账号级请求抢在 Cookie 写入
+     * `api.cookie` 之前发出，服务端会按游客处理 —— 雷达与推荐歌单返回通用数据
+     * 甚至空列表，而这一轮结果不会自己变好。
+     *
+     * 以前只能靠"退出登录再登一次"来打破这个状态。这里在首轮加载结束后做**一次**
+     * 兜底：确认登录态已就绪、且三个个性化区块仍有空缺时，强制重载一轮。
+     * 只重试一次，避免在真正的接口故障上反复打请求。
+     */
+    private var personalizedRetried = false
+
+    private fun retryPersonalizedIfEmpty() {
+        if (personalizedRetried) return
+        viewModelScope.launch {
+            val state = runCatching {
+                NCMusicApp.instance.userPreferences.userStateFlow.first()
+            }.getOrNull() ?: return@launch
+            if (!state.isLoggedIn) return@launch
+            val allLoaded = _dailySongs.value.isNotEmpty() &&
+                _playlists.value.isNotEmpty() &&
+                _radarPlaylists.value.isNotEmpty()
+            if (allLoaded) return@launch
+
+            personalizedRetried = true
+            // 留一点时间给 Cookie 恢复协程收尾
+            delay(400)
+            runCatching { repo.ensureCookieRestored() }
+            coroutineScope {
+                launch { loadDaily(force = true) }
+                launch { loadPlaylists(force = true) }
+                launch { loadRadar(force = true) }
+            }
         }
     }
 
@@ -182,8 +235,10 @@ class HomeViewModel : ViewModel() {
     }
 
     private suspend fun loadRadar(force: Boolean = false) {
-        if (!force && ContentCache.isFresh()) {
-            ContentCache.radarPlaylists?.let { data ->
+        // 用**分区**新鲜度：全局 isFresh() 会被榜单等其它分区的写入误判为"新鲜"，
+        // 导致雷达有缓存但实际为空时不再请求。
+        if (!force && ContentCache.isFreshRadar()) {
+            ContentCache.radarPlaylists?.takeIf { it.isNotEmpty() }?.let { data ->
                 _radarPlaylists.value = data
                 _sectionState.update {
                     it.copy(radar = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
@@ -194,11 +249,23 @@ class HomeViewModel : ViewModel() {
         when (val r = repo.radarPlaylists(limit = 7, refresh = force)) {
             is ApiResult.Success -> {
                 val data = r.data.distinctBy { it.id }.take(7)
+                // 空结果不覆盖：刷新失败时保留上一次的雷达卡片，
+                // 而不是把区块直接抹掉。
+                if (data.isEmpty() && _radarPlaylists.value.isNotEmpty()) {
+                    _sectionState.update { it.copy(radar = SectionStatus.Ready) }
+                    return
+                }
                 _radarPlaylists.value = data
                 ContentCache.storeRadar(data)
-                // 反向去重：若推荐歌单先返回，这里把与雷达重复的移除
+                // 反向去重：若推荐歌单先返回，这里把与雷达重复的移除。
+                //
+                // ⚠️ 去重后必须保证"仍有内容"。曾出现：推荐歌单与雷达高度重合，
+                // 过滤后列表变空 → 推荐歌单区块整体消失，用户以为功能坏了。
+                // 现在的规则是：去重后不足 4 个就放弃去重，宁可重复也要有内容。
                 if (_playlists.value.isNotEmpty()) {
-                    _playlists.value = _playlists.value.filter { it.id !in data.map { x -> x.id }.toSet() }
+                    val radarIds = data.map { x -> x.id }.toSet()
+                    val kept = _playlists.value.filter { it.id !in radarIds }
+                    if (kept.size >= 4) _playlists.value = kept
                 }
                 _sectionState.update {
                     it.copy(radar = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
@@ -233,12 +300,13 @@ class HomeViewModel : ViewModel() {
                 loadDaily(force = true)
             }
             _refreshing.value = false
+            _lastRefreshedAt.value = System.currentTimeMillis()
         }
     }
 
     private suspend fun loadPlaylists(force: Boolean = false) {
-        if (!force && ContentCache.isFresh()) {
-            ContentCache.personalizedPlaylists?.let { data ->
+        if (!force && ContentCache.isFreshPlaylists()) {
+            ContentCache.personalizedPlaylists?.takeIf { it.isNotEmpty() }?.let { data ->
                 _playlists.value = data
                 _sectionState.update {
                     it.copy(
@@ -253,15 +321,32 @@ class HomeViewModel : ViewModel() {
                 // 与雷达区块去重：官方客户端里这两个区块都来自账号口味，
                 // 数据源（每日推荐歌单）相同，重复展示没有信息量。
                 // 雷达先加载完成时这里过滤；反之由 loadRadar 末尾再做一次。
-                val radarIds = _radarPlaylists.value.map { it.id }.toSet()
-                val data = r.data.filter { it.id !in radarIds }
-                _playlists.value = data
-                ContentCache.storePersonalized(data)
-                _sectionState.update {
-                    it.copy(
-                        playlists = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready,
-                    )
+                // ⚠️ 空结果**不能**覆盖已有内容。
+                //
+                // 下拉刷新时若这一轮请求恰好返回空（令牌刚被覆盖、被限流、
+                // 服务端瞬时异常都会这样），原先会 `_playlists.value = emptyList()`，
+                // 首页的推荐歌单整块消失 —— 这就是「刷新后推荐歌单不见」。
+                // 现在：空结果视为"这轮没拿到"，保留上一份数据。
+                if (r.data.isEmpty()) {
+                    _sectionState.update {
+                        it.copy(
+                            playlists = if (_playlists.value.isEmpty()) {
+                                SectionStatus.Empty
+                            } else {
+                                SectionStatus.Ready
+                            },
+                        )
+                    }
+                    return
                 }
+
+                val radarIds = _radarPlaylists.value.map { it.id }.toSet()
+                val filtered = r.data.filter { it.id !in radarIds }
+                val data = if (filtered.size >= 4) filtered else r.data
+                _playlists.value = data
+                // 缓存存**未过滤**的原始数据
+                ContentCache.storePersonalized(r.data)
+                _sectionState.update { it.copy(playlists = SectionStatus.Ready) }
             }
             is ApiResult.Error -> {
                 // 已有数据时不覆盖为失败：展示旧数据比展示错误更有用
@@ -277,7 +362,7 @@ class HomeViewModel : ViewModel() {
     }
 
     private suspend fun loadToplist(force: Boolean = false) {
-        if (!force && ContentCache.isFresh()) {
+        if (!force && ContentCache.isFreshToplist()) {
             ContentCache.toplist?.let { data ->
                 _toplist.value = data
                 ToplistCache.data = data
@@ -321,8 +406,11 @@ class HomeViewModel : ViewModel() {
 
     /** 每日推荐需登录，未登录时静默失败 */
     private suspend fun loadDaily(force: Boolean = false) {
-        if (!force && ContentCache.isFresh()) {
-            ContentCache.dailySongs?.let { data ->
+        // 只认「每日推荐自己的」缓存时间戳。
+        // 并且缓存为空时继续走网络 —— 空列表可能来自未登录/令牌未就绪的那次请求，
+        // 不能在 TTL 内一直把它当成有效结果（这正是"已登录却显示不了每日推荐"的成因）。
+        if (!force && ContentCache.isFreshDaily()) {
+            ContentCache.dailySongs?.takeIf { it.isNotEmpty() }?.let { data ->
                 _dailySongs.value = data
                 _sectionState.update {
                     it.copy(daily = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
@@ -333,10 +421,16 @@ class HomeViewModel : ViewModel() {
         when (val r = repo.recommendSongs()) {
             is ApiResult.Success -> {
                 val data = r.data
-                _dailySongs.value = data
-                ContentCache.storeDaily(data)
-                _sectionState.update {
-                    it.copy(daily = if (data.isEmpty()) SectionStatus.Empty else SectionStatus.Ready)
+                // 空结果不回填：保留上一次的内容（如果有），
+                // 避免一次瞬时失败把整块抹掉。
+                if (data.isNotEmpty()) {
+                    _dailySongs.value = data
+                    ContentCache.storeDaily(data)
+                    _sectionState.update { it.copy(daily = SectionStatus.Ready) }
+                } else if (_dailySongs.value.isEmpty()) {
+                    _sectionState.update { it.copy(daily = SectionStatus.Empty) }
+                } else {
+                    _sectionState.update { it.copy(daily = SectionStatus.Ready) }
                 }
             }
             is ApiResult.Error -> {

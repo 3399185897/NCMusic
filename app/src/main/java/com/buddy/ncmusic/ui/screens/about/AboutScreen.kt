@@ -345,12 +345,8 @@ private fun AboutHero(
                 is UpdateChecker.Result.Available -> Unit
                 null -> Unit
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = "版本 $versionName",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.64f),
-            )
+            // 版本号只在下方信息卡里显示一次。
+            // 这里原本还有一行 "版本 x.y.z (n)"，与卡片完全重复。
         }
     }
 }

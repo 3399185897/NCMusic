@@ -1,5 +1,8 @@
 package com.buddy.ncmusic.ui.components
 
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.asPaddingValues
 import com.buddy.ncmusic.util.AudioQuality
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -72,6 +75,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
@@ -101,9 +106,14 @@ fun CoverImage(url: String?, modifier: Modifier = Modifier, contentDescription: 
 /**
  * 内容底部安全区高度。
  *
- * 仅比悬浮岛略大一点，且**悬浮岛不显示时不预留大空间**：
- * - 有歌曲播放（悬浮岛可见）：预留 92dp（岛高约 76 + 上下呼吸间距）
- * - 无歌曲播放：仅 14dp，让内容几乎贴到底栏
+ * ## 两种底栏模式的区别
+ *
+ * - **圆角 / 直角平铺**：`NavHost` 已用 `innerPadding.bottom` 为导航栏预留高度，
+ *   这里只补悬浮岛（有歌时 84dp），否则留一点收尾间距。
+ * - **药丸悬浮**：`NavHost` 的底部内边距为 0（内容必须延伸到药丸之下，
+ *   否则会在底栏上方被硬切一刀，看起来像"贴底的条"而不是悬浮）。
+ *   因此这里要**自己补**：系统导航栏 inset + 药丸 64dp + 上下留白 24dp，
+ *   有歌时再加悬浮岛 84dp。
  *
  * 用法：`contentPadding = PaddingValues(bottom = rememberBottomSafeSpace())`
  */
@@ -116,21 +126,21 @@ fun rememberBottomSafeSpace(): androidx.compose.ui.unit.Dp {
     // 而它实际只关心「有没有当前歌曲」这一个布尔量。
     val hasSong by com.buddy.ncmusic.playback.PlaybackManager.hasSongFlow.collectAsState()
 
-    // ⚠️ 这里只需为**悬浮岛**留位，不需要叠加底部导航栏高度。
-    //
-    // 原因：`NavHost` 已经通过
-    //   `modifier = Modifier.padding(bottom = innerPadding.calculateBottomPadding())`
-    // 为导航栏预留了空间（Scaffold 的 innerPadding 已含其高度）。
-    // 若此处再加一次导航栏高度，就是**重复计算** ——
-    // 内容底部会空出约 80dp 的无效留白，列表滚到底时明显"离底太远"。
-    //
-    // 悬浮岛的真实高度构成（见 MiniPlayer）：
-    //   外层上下 padding 4×2 + 内层 7×2 + 内容 50 = 72dp
-    // 再加 12dp 视觉呼吸 = 84dp。
-    //
-    // 无歌曲时没有悬浮岛，导航栏也已由 NavHost 处理，
-    // 只需保留很小的收尾间距。
-    return if (hasSong) 84.dp else 8.dp
+    val prefs = com.buddy.ncmusic.NCMusicApp.instance.userPreferences
+    val state by prefs.userStateFlow.collectAsState(initial = null)
+    val floating = state?.bottomBarStyle == "floating"
+
+    // 悬浮岛真实高度：外层 4×2 + 内层 7×2 + 内容 50 = 72dp，再加 12dp 呼吸
+    val playerSpace = if (hasSong) 84.dp else 0.dp
+    if (!floating) {
+        return if (hasSong) 84.dp else 8.dp
+    }
+
+    // 药丸：64dp 高 + 上下各 12dp 外边距；再加系统导航栏高度
+    val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
+        .asPaddingValues()
+        .calculateBottomPadding()
+    return 64.dp + 24.dp + navInset + playerSpace + 8.dp
 }
 
 /** 带轻量按压缩放动效的 IconButton（Material 3 交互节奏，不使用弹跳过冲）。 */
@@ -169,9 +179,30 @@ fun SongListItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onArtistClick: ((Long) -> Unit)? = null,
+    /**
+     * 是否画顶部分隔线。
+     *
+     * 列表从「每行一张独立圆角卡」改为「一整片 + 行间细线」后，
+     * 首行不需要那条线（否则卡片顶边会多出一条悬空横线），
+     * 因此调用方在 `itemsIndexed` 里传 `index > 0`。
+     */
+    showDivider: Boolean = true,
+    /**
+     * 从当前歌单移除这首歌。
+     *
+     * 只有「歌单详情」会传：其它列表（搜索、历史、每日推荐）没有所属歌单，
+     * 传 null 时详情弹窗不显示该入口。
+     */
+    onRemoveFromPlaylist: (() -> Unit)? = null,
 ) {
     var showDetail by remember { mutableStateOf(false) }
-    if (showDetail) SongDetailDialog(song = song, onDismiss = { showDetail = false })
+    if (showDetail) {
+        SongDetailDialog(
+            song = song,
+            onDismiss = { showDetail = false },
+            onRemoveFromPlaylist = onRemoveFromPlaylist,
+        )
+    }
 
     // ⚠️ 拆成两条细粒度流，而不是订阅完整 state。
     //
@@ -184,20 +215,34 @@ fun SongListItem(
     val playing by PlaybackManager.isPlayingFlow.collectAsState()
     // 仅在「当前歌曲且正在播放」时显示跳动动效
     val isCurrent = currentSongId == song.id && playing
+    // drawBehind 是绘制阶段读取，颜色必须先在这里取好
+    val dividerColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
 
-    Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    // 视觉语言与首页「每日推荐」卡一致：**整片列表 + 行间细线**，
+    // 而不是每行各自一张圆角卡（后者在 100 首的歌单里会显得零散）。
+    // 底色交给调用方所在的容器，这里只画线。
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp)
+            .drawBehind {
+                if (showDivider) {
+                    val stroke = 1.dp.toPx()
+                    drawLine(
+                        color = dividerColor,
+                        start = Offset(62.dp.toPx(), 0f),
+                        end = Offset(size.width, 0f),
+                        strokeWidth = stroke,
+                    )
+                }
+            },
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(onClick = onClick, onLongClick = { showDetail = true })
-                .heightIn(min = 68.dp)
-                .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                .heightIn(min = 64.dp)
+                .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             CoverImage(
@@ -252,7 +297,12 @@ fun SongListItem(
 
 /** 歌曲详情对话框（长按列表项或点击右侧三点触发） */
 @Composable
-fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
+fun SongDetailDialog(
+    song: Song,
+    onDismiss: () -> Unit,
+    /** 非空时显示「从歌单移除」，仅歌单详情页传入 */
+    onRemoveFromPlaylist: (() -> Unit)? = null,
+) {
     val shareIntentContext = LocalContext.current
     var showQualityPicker by remember { mutableStateOf(false) }
 
@@ -315,6 +365,21 @@ fun SongDetailDialog(song: Song, onDismiss: () -> Unit) {
                 DetailRow("专辑", song.album?.name ?: "未知")
                 DetailRow("时长", formatDuration(song.duration))
                 DetailRow("歌曲 ID", song.id.toString())
+                if (onRemoveFromPlaylist != null) {
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = {
+                            onRemoveFromPlaylist()
+                            onDismiss()
+                        },
+                        modifier = Modifier.padding(start = 12.dp),
+                    ) {
+                        Text(
+                            text = "从歌单移除",
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
                 // 下载进度：进行中显示进度条，结束后显示结果
                 val dl by DownloadController.state.collectAsState()
                 if (dl.songId == song.id && (dl.running || dl.finished)) {
@@ -448,10 +513,15 @@ fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, modifier: Modifier = M
 fun SectionTitle(title: String, modifier: Modifier = Modifier) {
     Text(
         text = title,
-        modifier = modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+        // 左 20dp 与推荐页 / 我的页的页头基准线对齐（原来是 16dp，
+        // 三页的标题左沿各差 4dp，横向滑动时能看到明显跳动）
+        modifier = modifier.padding(start = 20.dp, end = 20.dp, top = 26.dp, bottom = 12.dp),
         style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.primary,
+        fontWeight = FontWeight.SemiBold,
+        // 全站统一：标题回归 onSurface，强调色只留给"可交互的主动作"。
+        // 之前每个小节标题都是 primary 粗体，一页里会重复出现 3~5 次同色大字，
+        // 反而把真正需要强调的按钮压下去了。
+        color = MaterialTheme.colorScheme.onSurface,
     )
 }
 

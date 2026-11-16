@@ -48,6 +48,9 @@ class MainActivity : ComponentActivity() {
                 darkTheme = darkTheme,
                 dynamicColor = state?.dynamicColor ?: true,
                 customColor = state?.customColor ?: 0L,
+                paletteStyle = state?.paletteStyle ?: "TonalSpot",
+                colorSpec = state?.colorSpec ?: "SPEC_2021",
+                amoled = state?.amoled ?: false,
             ) {
                 // 让状态栏 / 导航栏的图标颜色跟随**应用主题**，而不是系统主题。
                 //
@@ -84,8 +87,17 @@ class MainActivity : ComponentActivity() {
                     //
                     // 这里**调换顺序**：内容先画，扩散遮罩后画叠在其上，
                     // 才形成"新颜色从点击处漫开覆盖旧界面"的效果。
-                    NCMusicApp()
-                    ColorRevealOverlay()
+                    // 自定义背景：铺在内容之下、扩散层之上。
+                    // 各页面的 Scaffold 容器本身是透明的，图片能透出来；
+                    // 图层内部带主题色渐变遮罩，保证文字对比度。
+                    Box(Modifier.fillMaxSize()) {
+                        val bg = state?.customBackground.orEmpty()
+                        if (bg.isNotBlank()) {
+                            com.buddy.ncmusic.ui.components.CustomBackgroundLayer(path = bg)
+                        }
+                        NCMusicApp()
+                        ColorRevealOverlay()
+                    }
                 }
             }
         }

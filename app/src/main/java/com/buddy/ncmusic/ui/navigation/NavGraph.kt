@@ -1,11 +1,14 @@
 package com.buddy.ncmusic.ui.navigation
 
+import com.buddy.ncmusic.ui.components.FloatingBarItem
+import com.buddy.ncmusic.ui.components.FloatingBottomBar
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.core.tween
 import com.buddy.ncmusic.ui.util.rememberReduceMotion
+import com.buddy.ncmusic.ui.util.IslandGapPreview
 import com.buddy.ncmusic.ui.util.Md3Motion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
@@ -21,8 +24,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.mutableIntStateOf
 import com.buddy.ncmusic.ui.screens.stats.StatsScreen
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.height
@@ -66,7 +78,6 @@ import com.buddy.ncmusic.R
 import com.buddy.ncmusic.playback.PlaybackManager
 import com.buddy.ncmusic.ui.components.MiniPlayer
 import com.buddy.ncmusic.data.prefetch.StartupPrefetcher
-import com.buddy.ncmusic.ui.screens.startup.StartupScreen
 import com.buddy.ncmusic.ui.screens.artist.ArtistScreen
 import com.buddy.ncmusic.ui.screens.discover.DiscoverScreen
 import com.buddy.ncmusic.ui.screens.about.AboutScreen
@@ -84,6 +95,16 @@ import com.buddy.ncmusic.ui.screens.settings.SettingsScreen
 
 /** 导航路由 */
 object Routes {
+    /**
+     * 主容器：三个 Tab 由 [androidx.compose.foundation.pager.HorizontalPager] 承载。
+     *
+     * 之所以不再让 HOME / DISCOVER / LIBRARY 各自作为 NavHost 目的地：
+     * NavHost 切 Tab 会**销毁旧页、重建新页**，每次回到首页都要重新组合
+     * LazyColumn 一屏内容 → 首帧必掉；而且只能靠淡入淡出转场（横向滑动会
+     * 让两页同时重绘，代价更高）。Pager 让三页常驻，滑动天然连续，
+     * 与 SukiSU 的 ViewPager2 行为一致。
+     */
+    const val MAIN = "main"
     const val HOME = "home"
     const val DISCOVER = "discover"
     const val LIBRARY = "library"
@@ -101,6 +122,7 @@ object Routes {
     const val EQ = "eq"
     const val ABOUT = "about"
     const val STATS = "stats"
+    const val THEME_SETTINGS = "theme_settings"
 
     fun playlist(id: Long) = "playlist/$id"
 
@@ -122,6 +144,80 @@ private val bottomTabs = listOf(
     TabItem(Routes.LIBRARY, R.string.tab_library, Icons.Filled.Person, Icons.Outlined.Person),
 )
 
+/**
+ * 三个 Tab 的横向容器。
+ *
+ * 与 SukiSU 的 `ViewPager2` 同构：页面常驻、手指横向拖动、底栏选中态跟随。
+ * 这样做同时解决两件事 ——
+ *  1. 翻页是真正的滑动，而不是淡入淡出；
+ *  2. 切走的页面不会被销毁，回到首页时不再重新组合一屏内容（首帧卡顿的来源）。
+ *
+ * `beyondViewportPageCount = 1` 让相邻页保持组合：三页总量可控，
+ * 换来滑动时不需要"边滑边组合新页面"。
+ */
+@Composable
+private fun MainPager(
+    pagerState: androidx.compose.foundation.pager.PagerState,
+    prefetchNeighbors: Int,
+    onPlay: (List<com.buddy.ncmusic.data.model.Song>, Int) -> Unit,
+    onOpenPlaylist: (Long) -> Unit,
+    onOpenArtist: (Long) -> Unit,
+    onOpenIdentify: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onOpenLocal: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenStats: () -> Unit,
+    onOpenLogin: () -> Unit,
+) {
+    // 相邻页预取要**延后**开启。
+    //
+    // 冷启动时若 `beyondViewportPageCount = 1`，Pager 会在首帧就把「发现」页
+    // 一并组合 —— 那是 4 个榜单 × 10 行 + 搜索框，是整棵树上最重的一屏，
+    // 实测把冷启动的 p99 拉到 125ms，正好对应"第一次进主页卡一下"。
+    // 先只组合当前页，等首屏稳定后再打开预取：
+    // 那时用户还没开始滑，预取不会与首帧抢主线程。
+    val reduceMotion = rememberReduceMotion()
+
+    HorizontalPager(
+        state = pagerState,
+        modifier = Modifier.fillMaxSize(),
+        beyondViewportPageCount = prefetchNeighbors,
+        key = { it },
+    ) { page ->
+        // 页面级入场动画已移除。
+        //
+        // 之前这里是「首次组合时淡入 + 上浮 10dp」。实测它正是**切页掉帧**的主因：
+        //  · Pager 横向滑动本身已经是转场，再叠一层淡入属于重复表达；
+        //  · 动画期间需要额外的 alpha 图层，而目标页同时正在首次组合整屏内容，
+        //    两笔开销撞在同一帧上（janky 从 0.3% 升到 1.1%）。
+        // MD3 的容器变换（Pager 滑动）本就不建议再叠加独立入场动画。
+        Box(Modifier.fillMaxSize()) {
+        when (page) {
+            0 -> HomeScreen(
+                onPlay = onPlay,
+                onOpenPlaylist = onOpenPlaylist,
+                onOpenArtist = onOpenArtist,
+            )
+            1 -> DiscoverScreen(
+                onPlay = onPlay,
+                onOpenPlaylist = onOpenPlaylist,
+                onOpenIdentify = onOpenIdentify,
+                onOpenArtist = onOpenArtist,
+            )
+            else -> LibraryScreen(
+                onPlay = onPlay,
+                onOpenPlaylist = onOpenPlaylist,
+                onOpenHistory = onOpenHistory,
+                onOpenLocal = onOpenLocal,
+                onOpenSettings = onOpenSettings,
+                onOpenStats = onOpenStats,
+                onOpenLogin = onOpenLogin,
+            )
+        }
+        }
+    }
+}
+
 /** Tab 在底栏中的序号，用于判断切换方向；非 Tab 路由返回 -1 */
 private fun tabIndexOf(route: String?): Int =
     bottomTabs.indexOfFirst { it.route == route }
@@ -131,52 +227,64 @@ fun NCMusicApp() {
     val userState by NCMusicApp.instance.userPreferences.userStateFlow
         .collectAsState(initial = null)
     val loadedState = userState
-    val startupProgress by StartupPrefetcher.progress.collectAsState()
     // DataStore 是异步的。若首帧先用默认值创建 NavHost，之后即便读到
     // startPage=discover/library，NavController 的起始目的地也不会再改，
     // 用户的“启动页”设置等于失效。因此先等偏好就绪，再创建导航图。
     if (loadedState == null) {
-        StartupScreen(progress = startupProgress)
+        // DataStore 首次读取通常只要 50~150ms。
+        // 这里画的是**揭幕动画的第 0 帧**（同一朵云、同色、同位置），
+        // 所以从背板过渡到揭幕是连续的，不会"跳一下"。
+        com.buddy.ncmusic.ui.screens.startup.CloudLaunchBackdrop()
         return
     }
 
-    var appReady by rememberSaveable { mutableStateOf(false) }
-    var splashVisible by rememberSaveable { mutableStateOf(true) }
+    // 揭幕是否仍在进行。用 rememberSaveable：进程被回收后恢复不重播。
+    var revealActive by rememberSaveable { mutableStateOf(true) }
     LaunchedEffect(Unit) {
-        val startedAt = SystemClock.elapsedRealtime()
-        withTimeoutOrNull(3_500L) {
-            StartupPrefetcher.warmUp(
-                isLoggedIn = loadedState.isLoggedIn,
-            )
+        // 预热**不阻塞首帧**：主界面立刻开始组合，数据在后台补齐。
+        //
+        // 之前的写法是 warmUp 完成后才 appReady=true，再组合主界面 ——
+        // 于是"主界面首次组合"这件事发生在遮罩即将淡出的时刻，
+        // 与淡出动画撞在同一批帧上，用户看到的就是"动画放完卡一下"。
+        // 现在预热是旁路任务，它的结果只影响首页有无数据，不影响何时揭幕。
+        launch {
+            withTimeoutOrNull(4_000L) {
+                StartupPrefetcher.warmUp(isLoggedIn = loadedState.isLoggedIn)
+            }
         }
-        val remaining = 800L - (SystemClock.elapsedRealtime() - startedAt)
-        if (remaining > 0L) delay(remaining)
-        appReady = true
-        // 先让主界面在遮罩下完成首帧组合，再淡出遮罩，避免露出空白帧。
-        delay(180L)
-        splashVisible = false
-    }
-    if (!appReady) {
-        StartupScreen(progress = startupProgress)
-        return
     }
     // 仅本次启动读取一次；在设置页修改“启动页”不应重配当前 NavController。
-    val startDest = remember {
+    val initialTab = remember {
         when (loadedState.startPage) {
-            "discover" -> Routes.DISCOVER
-            "library" -> Routes.LIBRARY
-            else -> Routes.HOME
+            "discover" -> 1
+            "library" -> 2
+            else -> 0
         }
     }
 
     val navController = rememberNavController()
+    val scope = rememberCoroutineScope()
+    // 三个 Tab 的宿主 Pager：页面常驻，滑动即切换
+    val pagerState = rememberPagerState(initialPage = initialTab) { bottomTabs.size }
+
+    // 相邻页预取开关。提升到这一层是因为底栏与 Pager 都要用：
+    // 底栏点击时立即置 1，不必等启动计时器。
+    var prefetchNeighbors by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        delay(700)
+        prefetchNeighbors = 1
+    }
+
     val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
+    val onMain = backStackEntry?.destination?.route == Routes.MAIN
+    // 位于主容器时，用 Pager 当前页对应的 route 表示"当前 Tab"
+    val currentRoute = if (onMain) {
+        bottomTabs.getOrNull(pagerState.currentPage)?.route
+    } else {
+        backStackEntry?.destination?.route
+    }
 
     val showBottomBar = bottomTabs.any { it.route == currentRoute }
-
-    // 记录切换前所处的 Tab 序号：转场 lambda 中据此决定滑动方向
-    var lastTabIndex by rememberSaveable { mutableIntStateOf(0) }
 
     // 只有「有底栏 + 确有歌曲」时才需要迷你播放器及其占位空间；
     // 未播放歌曲时若仍预留高度，底部会露出一块空白区域
@@ -249,6 +357,29 @@ fun NCMusicApp() {
         bottomBar = {
             if (showBottomBar) {
                 // 仅底栏；迷你播放器改为悬浮在内容之上（见下方 Box）
+                //
+                // 两种样式由「设置 → 外观 → 底栏样式」切换：
+                //  · floating：药丸悬浮 + 选中项横向展开文字（参考 SukiSU）
+                //  · classic / rounded：Material 标准平铺导航栏
+                if (loadedState.bottomBarStyle == "floating") {
+                    FloatingBottomBar(
+                        items = bottomTabs.map {
+                            FloatingBarItem(
+                                label = stringResource(it.labelRes),
+                                selectedIcon = it.selectedIcon,
+                                unselectedIcon = it.unselectedIcon,
+                            )
+                        },
+                        selectedIndex = tabIndexOf(currentRoute).coerceAtLeast(0),
+                        onSelect = { index ->
+                            // 用户已经要切页了：立刻打开相邻页预取，
+                            // 不必等启动计时器 —— 否则目标页可能还没组合过
+                            prefetchNeighbors = 1
+                            // 底栏点击与横向滑动走同一条路径，选中态由 pagerState 驱动
+                            scope.launch { pagerState.animateScrollToPage(index) }
+                        },
+                    )
+                } else {
                 NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surfaceContainer,
                     tonalElevation = 0.dp,
@@ -264,13 +395,9 @@ fun NCMusicApp() {
                         NavigationBarItem(
                             selected = selected,
                             onClick = {
-                                // 记录来源 Tab，供转场判断方向
-                                val from = tabIndexOf(currentRoute)
-                                if (from >= 0) lastTabIndex = from
-                                navController.navigate(tab.route) {
-                                    popUpTo(Routes.HOME) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
+                                prefetchNeighbors = 1
+                                scope.launch {
+                                    pagerState.animateScrollToPage(tabIndexOf(tab.route))
                                 }
                             },
                             icon = {
@@ -290,6 +417,7 @@ fun NCMusicApp() {
                         )
                     }
                 }
+                }
             }
         },
     ) { innerPadding ->
@@ -298,7 +426,7 @@ fun NCMusicApp() {
         Box(Modifier.fillMaxSize()) {
         NavHost(
             navController = navController,
-            startDestination = startDest,
+            startDestination = Routes.MAIN,
             modifier = Modifier.padding(
                 // 沉浸式页面（播放器 / 歌词）由自身处理状态栏内边距，
                 // 让背景能延伸到状态栏下，避免顶部出现空白条
@@ -307,9 +435,16 @@ fun NCMusicApp() {
                 } else {
                     innerPadding.calculateTopPadding()
                 },
-                // 不为悬浮岛预留高度 —— 内容可延伸到最底，
-                // 岛直接叠在内容之上，四周透出的是页面内容而非空白
-                bottom = innerPadding.calculateBottomPadding(),
+                // 不为悬浮岛预留高度 —— 内容可延伸到最底。
+                //
+                // 药丸悬浮模式下**连底栏高度也不留**：否则内容会在底栏上方
+                // 被硬切一刀，胶囊下方是一条纯色空白，看起来像"贴底的条"。
+                // 底部留白改由各列表的 rememberBottomSafeSpace() 负责。
+                bottom = if (loadedState.bottomBarStyle == "floating" && showBottomBar) {
+                    0.dp
+                } else {
+                    innerPadding.calculateBottomPadding()
+                },
             ),
             // 统一转场：350ms 固定节奏 + 视差 + 缩放（见 Transitions.kt）
             // 转场传入减动效偏好：系统开启「移除动画」时退化为瞬时切换
@@ -318,106 +453,25 @@ fun NCMusicApp() {
             popEnterTransition = { popEnterTransition(reduceMotion) },
             popExitTransition = { popExitTransition(reduceMotion) },
         ) {
-            composable(
-                route = Routes.HOME,
-                // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
-                // 从而避免此前"从我的返回发现时方向相反"的问题。
-                enterTransition = {
-                    tabEnterTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                exitTransition = {
-                    tabExitTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                popEnterTransition = { popEnterTransition(reduceMotion) },
-                popExitTransition = { popExitTransition(reduceMotion) },
-            ) {
-                HomeScreen(
+            composable(Routes.MAIN) {
+                MainPager(
+                    pagerState = pagerState,
+                    prefetchNeighbors = prefetchNeighbors,
                     onPlay = { songs, index ->
                         PlaybackManager.playQueue(songs, index)
                         playerOpen = true
                     },
                     onOpenPlaylist = { navController.navigate(Routes.playlist(it)) },
                     onOpenArtist = { id ->
-                            // ⚠️ 必须先收起全屏播放器再跳转。
-                            //
-                            // 播放器是"同树覆盖层"（非 NavHost 路由），
-                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
-                            // 用户点击后画面毫无变化（仍是播放器），
-                            // 需手动下滑才看到目标页面，等同"点击无反应"。
-                            playerOpen = false
-                            navController.navigate(Routes.artist(id))
-                        },
-                )
-            }
-            composable(
-                route = Routes.DISCOVER,
-                // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
-                // 从而避免此前"从我的返回发现时方向相反"的问题。
-                enterTransition = {
-                    tabEnterTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                exitTransition = {
-                    tabExitTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                popEnterTransition = { popEnterTransition(reduceMotion) },
-                popExitTransition = { popExitTransition(reduceMotion) },
-            ) {
-                DiscoverScreen(
-                    onPlay = { songs, index ->
-                        PlaybackManager.playQueue(songs, index)
-                        playerOpen = true
+                        // ⚠️ 必须先收起全屏播放器再跳转。
+                        //
+                        // 播放器是"同树覆盖层"（非 NavHost 路由），若只 navigate 不收起，
+                        // 歌手页会**叠在播放器下方** —— 用户点击后画面毫无变化（仍是播放器），
+                        // 需手动下滑才看到目标页面，等同"点击无反应"。
+                        playerOpen = false
+                        navController.navigate(Routes.artist(id))
                     },
-                    onOpenPlaylist = { navController.navigate(Routes.playlist(it)) },
                     onOpenIdentify = { navController.navigate(Routes.IDENTIFY) },
-                    onOpenArtist = { id ->
-                            // ⚠️ 必须先收起全屏播放器再跳转。
-                            //
-                            // 播放器是"同树覆盖层"（非 NavHost 路由），
-                            // 若只 navigate 不收起，歌手页会**叠在播放器下方**——
-                            // 用户点击后画面毫无变化（仍是播放器），
-                            // 需手动下滑才看到目标页面，等同"点击无反应"。
-                            playerOpen = false
-                            navController.navigate(Routes.artist(id))
-                        },
-                )
-            }
-            composable(
-                route = Routes.LIBRARY,
-                // Tab 平行切换：**按序号决定滑动方向**，序号增大向右推进、减小向左退回，
-                // 从而避免此前"从我的返回发现时方向相反"的问题。
-                enterTransition = {
-                    tabEnterTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                exitTransition = {
-                    tabExitTransition(
-                        forward = tabIndexOf(targetState.destination.route) >= lastTabIndex,
-                        reduceMotion = reduceMotion,
-                    )
-                },
-                popEnterTransition = { popEnterTransition(reduceMotion) },
-                popExitTransition = { popExitTransition(reduceMotion) },
-            ) {
-                LibraryScreen(
-                    onPlay = { songs, index ->
-    PlaybackManager.playQueue(songs, index)
-    playerOpen = true
-},
-                    onOpenPlaylist = { navController.navigate(Routes.playlist(it)) },
                     onOpenHistory = { navController.navigate(Routes.HISTORY) },
                     onOpenLocal = { navController.navigate(Routes.LOCAL) },
                     onOpenSettings = { navController.navigate(Routes.SETTINGS) },
@@ -491,7 +545,46 @@ fun NCMusicApp() {
                     onBack = { navController.popBackStack() },
                 )
             }
-            composable(Routes.LYRIC) {
+            // 歌词页用**淡入淡出**，与播放器的"上滑推出"形成对照：
+            //  · 播放器是"从底部推上来"，本质是层级推进；
+            //  · 歌词是同一首歌的另一面（同一空间里的转场），
+            //    淡入更像"贴上一层"而不是"打开新页面"，
+            //    退出时同样淡出，回到播放器不会有方向感上的突兀。
+            composable(
+                Routes.LYRIC,
+                enterTransition = {
+                    fadeIn(
+                        animationSpec = tween(
+                            Md3Motion.Medium2,
+                            easing = Md3Motion.StandardDecelerate,
+                        ),
+                    )
+                },
+                exitTransition = {
+                    fadeOut(
+                        animationSpec = tween(
+                            Md3Motion.Medium1,
+                            easing = Md3Motion.StandardAccelerate,
+                        ),
+                    )
+                },
+                popEnterTransition = {
+                    fadeIn(
+                        animationSpec = tween(
+                            Md3Motion.Medium2,
+                            easing = Md3Motion.StandardDecelerate,
+                        ),
+                    )
+                },
+                popExitTransition = {
+                    fadeOut(
+                        animationSpec = tween(
+                            Md3Motion.Medium1,
+                            easing = Md3Motion.StandardAccelerate,
+                        ),
+                    )
+                },
+            ) {
                 LyricScreen(
                     onBack = {
                         navController.popBackStack()
@@ -512,32 +605,26 @@ fun NCMusicApp() {
             composable(Routes.LOGIN) {
                 LoginScreen(onBack = { navController.popBackStack() })
             }
+            // 设置已改为**单页分组**（对齐 SukiSU）：不再有「分类总览 → 二级页」。
             composable(Routes.SETTINGS) {
                 SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onOpenEq = { navController.navigate(Routes.EQ) },
                     onOpenAbout = { navController.navigate(Routes.ABOUT) },
-                    // 「关于」不需要先进入分类子页再点「查看详细信息」——
-                    // 它本身就是一页静态信息，直接跳到详细页，少一次点击。
-                    onOpenGroup = { group ->
-                        if (group == SettingsGroup.ABOUT) {
-                            navController.navigate(Routes.ABOUT)
-                        } else {
-                            navController.navigate(Routes.settingsGroup(group.id))
-                        }
-                    },
+                    onOpenTheme = { navController.navigate(Routes.THEME_SETTINGS) },
                 )
             }
+            // 旧路由保留一版：已存在的返回栈/深链仍能落到设置主页，
+            // 而不是崩在「找不到 destination」。
             composable(
                 route = Routes.SETTINGS_GROUP,
                 arguments = listOf(navArgument("groupId") { type = NavType.StringType }),
-            ) { entry ->
-                val groupId = entry.arguments?.getString("groupId").orEmpty()
+            ) {
                 SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onOpenEq = { navController.navigate(Routes.EQ) },
                     onOpenAbout = { navController.navigate(Routes.ABOUT) },
-                    initialGroup = SettingsGroup.fromId(groupId) ?: SettingsGroup.ALL,
+                    onOpenTheme = { navController.navigate(Routes.THEME_SETTINGS) },
                 )
             }
             composable(Routes.EQ) {
@@ -549,6 +636,11 @@ fun NCMusicApp() {
             composable(Routes.ABOUT) {
                 AboutScreen(onBack = { navController.popBackStack() })
             }
+            composable(Routes.THEME_SETTINGS) {
+                com.buddy.ncmusic.ui.screens.settings.ThemeSettingsScreen(
+                    onBack = { navController.popBackStack() },
+                )
+            }
         }
 
             // 迷你播放器：悬浮在底栏正上方
@@ -558,13 +650,38 @@ fun NCMusicApp() {
             // Coil 图片加载；若每次路由切换都把它移除再重建，
             // 关闭播放器回到 Tab 时会重新取色，取色结果返回的瞬间颜色跳变 —— 即「卡一帧」。
             // 常驻组合后这些状态只初始化一次，显隐只是 alpha/位移动画，无重建开销。
+            // 悬浮岛与底栏的间距由「外观 → 悬浮岛间距」决定（0~40dp）。
+            //
+            // ⚠️ 基准不是 `innerPadding` 的底边，而是**药丸的顶边**：
+            // FloatingBottomBar 自己在药丸上方留了 12dp（它的 vertical padding），
+            // 若直接拿 innerPadding 当基准，gap=0 时悬浮岛与药丸之间仍隔着这 12dp，
+            // 用户设成 0 却发现"还是没贴住"。
+            // MiniPlayer 内部还给阴影留了 4dp 底部内边距，同样要扣掉。
+            //
+            // 拖动滑块时优先用实时预览值，让悬浮岛跟着升降。
+            val islandGap = (IslandGapPreview.live ?: loadedState.miniPlayerGap)
+                .coerceIn(0, 40).dp
+            val barOwnInset = if (loadedState.bottomBarStyle == "floating") 12.dp else 0.dp
+            val islandSelfInset = 4.dp
+            // 无底栏时（播放器/二级页）不需要扣除，直接贴屏幕底部安全区
+            val islandBase = if (showBottomBar) {
+                (innerPadding.calculateBottomPadding() - barOwnInset - islandSelfInset)
+                    .coerceAtLeast(0.dp)
+            } else {
+                innerPadding.calculateBottomPadding()
+            }
             MiniPlayer(
                 onOpen = { playerOpen = true },
                 // 播放器展开时隐藏悬浮岛
                 visible = showMiniPlayer && !playerOpen,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = innerPadding.calculateBottomPadding()),
+                    .fillMaxWidth()
+                    .padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        bottom = islandBase + islandGap,
+                    ),
             )
         }
     }
@@ -607,17 +724,14 @@ fun NCMusicApp() {
             .align(Alignment.BottomCenter)
             .padding(start = 16.dp, end = 16.dp, bottom = snackbarBottom),
     )
-    AnimatedVisibility(
-        visible = splashVisible,
-        enter = androidx.compose.animation.EnterTransition.None,
-        exit = fadeOut(
-            animationSpec = tween(Md3Motion.Medium1, easing = Md3Motion.StandardAccelerate),
-        ) + scaleOut(
-            targetScale = 0.985f,
-            animationSpec = tween(Md3Motion.Medium1, easing = Md3Motion.EmphasizedAccelerate),
-        ),
-    ) {
-        StartupScreen(progress = startupProgress)
+    // 云朵揭幕层：位于所有界面之上（含播放器覆盖层），只负责"什么时候被看见"。
+    //
+    // 注意它**不再等待任何加载**：下面整个主界面已经在同一帧里组合好了，
+    // 云在这里散开的同时，界面早已是稳定帧 —— 这正是卡顿消失的原因。
+    if (revealActive) {
+        com.buddy.ncmusic.ui.screens.startup.CloudReveal(
+            onFinished = { revealActive = false },
+        )
     }
     }
 

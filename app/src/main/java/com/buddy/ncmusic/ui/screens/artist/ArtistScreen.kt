@@ -81,7 +81,7 @@ fun ArtistScreen(
                 contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
             ) {
                 itemsIndexed(songs) { index, song ->
-                    SongListItem(song = song, onClick = { onPlay(songs, index) })
+                    SongListItem(song = song, onClick = { onPlay(songs, index) }, showDivider = index > 0)
                 }
             }
         }

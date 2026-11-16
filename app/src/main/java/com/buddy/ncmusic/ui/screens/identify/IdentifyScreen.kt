@@ -184,7 +184,7 @@ fun IdentifyScreen(onBack: () -> Unit, onPlay: (List<Song>, Int) -> Unit) {
 
             identifiedSong?.let { song ->
                 Spacer(Modifier.height(16.dp))
-                SongListItem(song = song, onClick = { onPlay(listOf(song), 0) })
+                SongListItem(song = song, onClick = { onPlay(listOf(song), 0) }, showDivider = false)
             }
         }
     }

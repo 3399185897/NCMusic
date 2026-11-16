@@ -64,6 +64,11 @@ class DirectApi {
          * 表现为「eapi 抛异常 → 回落 weapi → 高音质被判无权限」。
          * 把与 weapi 同域的地址排在第二，等于用"已验证可达"的域名兜底。
          */
+        /** 允许从 Set-Cookie 合并进会话的字段 */
+        private val COOKIE_WHITELIST = setOf(
+            "MUSIC_U", "MUSIC_A", "MUSIC_R_U", "__csrf", "__remember_me",
+        )
+
         private val EAPI_HOSTS = listOf(
             "https://interface.music.163.com",
             "https://music.163.com",
@@ -192,16 +197,61 @@ class DirectApi {
         }
     }
 
+    /**
+     * 合并响应里的 Set-Cookie。
+     *
+     * ## 为什么必须"合并"而不是"替换"
+     *
+     * 原先是：
+     * ```kotlin
+     * val merged = raw.joinToString("; ") { it.substringBefore(";") }
+     * if (merged.contains("MUSIC_U=")) cookie = merged
+     * ```
+     * 只要响应里带了 `MUSIC_U`，就把整个 Cookie **替换成这一个头** ——
+     * 而登录、刷新等响应往往只回 `MUSIC_U`，于是 `__csrf` 被一并丢掉。
+     *
+     * 后果非常隐蔽：
+     *  · 鉴权仍然有效（MUSIC_U 还在），所以接口都返回 200
+     *  · 但 `csrf_token` 取不到 → 账号级接口返回 `{"code":200,"dailySongs":[]}`
+     *  · 表现为「已登录但每日推荐为空」「下拉刷新后推荐歌单消失」
+     *
+     * 现在只更新白名单字段，其余保持不动；丢掉 `__csrf` 的情况不再发生。
+     */
     private fun captureCookie(resp: Response) {
         val raw = resp.headers("Set-Cookie")
         if (raw.isEmpty()) return
-        val merged = raw.joinToString("; ") { it.substringBefore(";").trim() }
-        if (merged.contains("MUSIC_U=")) cookie = merged
+
+        val jar = LinkedHashMap<String, String>()
+        cookie.orEmpty().split(';').forEach { part ->
+            val kv = part.trim()
+            if (kv.isEmpty() || !kv.contains('=')) return@forEach
+            jar[kv.substringBefore('=').trim()] = kv
+        }
+
+        var changed = false
+        raw.forEach { header ->
+            val kv = header.substringBefore(';').trim()
+            if (!kv.contains('=')) return@forEach
+            val key = kv.substringBefore('=').trim()
+            // 只接受鉴权与令牌字段：埋点字段（NMTID / _ntes_nuid / JSESSIONID*）
+            // 对接口无用，留着还会污染 eapi 的 Cookie 指纹。
+            if (key !in COOKIE_WHITELIST) return@forEach
+            if (jar[key] != kv) {
+                jar[key] = kv
+                changed = true
+            }
+        }
+        if (changed) cookie = jar.values.joinToString("; ")
     }
 
     private suspend fun weapi(path: String, body: JsonObject = JsonObject(emptyMap())): JsonObject =
         withContext(Dispatchers.IO) {
-            val (params, encSecKey) = WeapiCrypto.encrypt(body.toString())
+            // csrf_token 必须与 Cookie 里的 __csrf 一致。
+            //
+            // 之前固定传空串：游客态没问题，但**已登录**时服务端会判定
+            // csrf 不匹配，多数账号级接口会返回 `{"code":200,"recommend":[]}`
+            // 这种"成功但没有数据"的响应 —— 表现就是「已登录却拿不到每日推荐」。
+            val (params, encSecKey) = WeapiCrypto.encrypt(withCsrf(body).toString())
             val form = FormBody.Builder()
                 .add("params", params)
                 .add("encSecKey", encSecKey)
@@ -220,6 +270,31 @@ class DirectApi {
                 throw ApiNetworkException(e.message ?: "网络连接失败", e)
             }
         }
+
+    /** 从 Cookie 中取 `__csrf`（服务端下发的 CSRF 令牌） */
+    private fun cookieCsrf(): String =
+        Regex("(?:^|;)\\s*__csrf=([^;]+)")
+            .find(cookie.orEmpty())
+            ?.groupValues?.get(1)
+            ?.trim()
+            .orEmpty()
+
+    /**
+     * 为 weapi 请求体补齐 csrf_token。
+     *
+     * 只处理"请求体里本来就有 csrf_token 字段"的接口：
+     * 这类接口的共同点是**需要登录态**，令牌不匹配时服务端静默返回空数据。
+     * 不含该字段的公开接口原样放行，避免多余参数引发未知行为。
+     */
+    private fun withCsrf(body: JsonObject): JsonObject {
+        val declared = body["csrf_token"] ?: return body
+        if ((declared as? JsonPrimitive)?.content?.isNotEmpty() == true) return body
+        val token = cookieCsrf()
+        if (token.isEmpty()) return body
+        val copy = body.toMutableMap()
+        copy["csrf_token"] = JsonPrimitive(token)
+        return JsonObject(copy)
+    }
 
     /**
      * eapi 通道请求。
@@ -565,11 +640,22 @@ class DirectApi {
         val result = LinkedHashMap<Long, Playlist>()
         var radarFailure: Throwable? = null
 
-        runCatching { officialRadarPlaylists(refresh) }
+        var official = runCatching { officialRadarPlaylists(refresh) }
             .onFailure { radarFailure = it }
             .getOrNull()
             .orEmpty()
-            .forEach { playlist ->
+
+        // 刷新时服务端可能重新生成首页而**不包含**雷达区块，
+        // 于是 refresh=true 反而拿到空 → 上层保留旧数据 →
+        // 表现为「下拉刷新后雷达歌单一动不动」。
+        // 这里退回一次非 refresh 请求，取回当前有效的雷达区块。
+        if (official.isEmpty() && refresh) {
+            official = runCatching { officialRadarPlaylists(false) }
+                .getOrNull()
+                .orEmpty()
+        }
+
+        official.forEach { playlist ->
                 if (result.size < limit) result.putIfAbsent(playlist.id, playlist)
             }
 
@@ -698,7 +784,34 @@ class DirectApi {
             "/weapi/v1/discovery/recommend/songs",
             buildJsonObject { put("csrf_token", "") },
         )
-        return root["data"]?.safeObject()?.get("dailySongs")?.arr()?.mapNotNull { it.toSong() } ?: emptyList()
+        val data = root["data"]?.safeObject()
+        // 只有登录态才有"每日推荐"。
+        //
+        // 未登录时服务端会返回 `recommend`（游客推荐），若拿它填进
+        // 「每日推荐」区块，等于给游客展示一份假日推 —— 内容与账号无关，
+        // 且会让人误以为已登录。这里以 Cookie 里的 MUSIC_U 判定登录态。
+        val loggedIn = cookie.orEmpty().contains("MUSIC_U=")
+        val songs = data?.get("dailySongs")?.arr()
+            ?.mapNotNull { it.toSong() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: data?.get("recommend")?.arr()
+                ?.mapNotNull { it.toSong() }
+                ?.takeIf { loggedIn }
+            ?: emptyList()
+        if (songs.isNotEmpty() || !loggedIn) return songs
+
+        // v1 空结果时再试 v3：两者字段一致，但服务端对空结果的判定
+        // 偶有差异（v1 在部分账号上会返回 `recommend: []`）。
+        // 多一次请求只在"确实空"的情况下发生，不影响正常路径。
+        val v3 = runCatching {
+            weapi(
+                "/weapi/v3/discovery/recommend/songs",
+                buildJsonObject { put("csrf_token", "") },
+            )
+        }.getOrNull()
+        return v3?.get("data")?.safeObject()?.get("dailySongs")?.arr()
+            ?.mapNotNull { it.toSong() }
+            ?: emptyList()
     }
 
     suspend fun userPlaylists(uid: Long): List<Playlist> =
@@ -1025,7 +1138,15 @@ class DirectApi {
         br < 160_000 -> "standard"
         br < 256_000 -> "higher"
         br < 700_000 -> "exhigh"
-        br < 1_400_000 -> "lossless"
+        // 「无损」的上界必须是 **1.9 Mbps**，不能是 1.4 Mbps。
+        //
+        // CD 规格的 FLAC（44.1kHz / 16bit）码率恒为 **1411 kbps**，
+        // 恰好高于旧的 1.4M 阈值 —— 于是用户选「无损」时，
+        // 服务端返回的 1411k 地址被归到 Hi-Res 区间，
+        // 界面档位标签就"自动跳到高一级"（无损 → 高清臻音）。
+        // 真正的 Hi-Res（24bit/96kHz FLAC）典型码率在 2.3–3.0 Mbps，
+        // 1.9M 这个分界能干净地把两者分开。
+        br < 1_900_000 -> "lossless"
         // 1.4M–4.5M 归 Hi-Res（高清臻音，96kHz/24bit）。
         // 实测该档位典型码率约 2.8–3.0 Mbps（如 3018378）；
         // 阈值若卡在 3.0M，会把 3018378 误判成「超清母带（192kHz/24bit）」，
@@ -1145,6 +1266,33 @@ class DirectApi {
                 put("trackId", id)
                 put("like", like)
                 put("time", 3)
+                put("csrf_token", "")
+            },
+        )
+        return root["code"]?.asInt() == 200
+    }
+
+    /**
+     * 把歌曲加入 / 移出歌单。
+     *
+     * 走 `/api/playlist/manipulate/tracks`（web 端「收藏到歌单」用的就是它）。
+     * 注意 `trackIds` 必须是 **JSON 数组的字符串形式**（`"[123]"`），
+     * 传裸数组会被服务端当成非法参数。
+     *
+     * @return true 表示服务端返回 200
+     */
+    suspend fun manipulatePlaylistTracks(
+        playlistId: Long,
+        songId: Long,
+        add: Boolean,
+    ): Boolean {
+        val root = weapi(
+            "/weapi/playlist/manipulate/tracks",
+            buildJsonObject {
+                put("op", if (add) "add" else "del")
+                put("pid", playlistId)
+                put("trackIds", "[$songId]")
+                put("imme", "true")
                 put("csrf_token", "")
             },
         )

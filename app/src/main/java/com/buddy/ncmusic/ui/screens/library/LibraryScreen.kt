@@ -6,6 +6,11 @@ import com.buddy.ncmusic.ui.components.ListWithScrollIndicator
 import com.buddy.ncmusic.ui.theme.AppShapes
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.clickable
@@ -29,12 +34,19 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,6 +66,7 @@ import com.buddy.ncmusic.ui.components.CoverImage
 import com.buddy.ncmusic.ui.components.LoadingView
 import com.buddy.ncmusic.ui.components.SectionTitle
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(
     onPlay: (List<Song>, Int) -> Unit,
@@ -73,9 +86,25 @@ fun LibraryScreen(
 
     LaunchedEffect(Unit) { vm.refreshHistory() }
 
+    var showAccountSheet by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     var createError by remember { mutableStateOf<String?>(null) }
+
+    if (showAccountSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAccountSheet = false },
+            sheetState = rememberModalBottomSheetState(),
+        ) {
+            AccountPanel(
+                userState = userState,
+                onLogout = {
+                    vm.logout()
+                    showAccountSheet = false
+                },
+            )
+        }
+    }
 
     if (showCreateDialog) {
         AlertDialog(
@@ -129,25 +158,63 @@ fun LibraryScreen(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(top = 16.dp, bottom = rememberBottomSafeSpace()),
     ) {
-        // 头像与设置（顶部留白后整体下移）
+        // 页头（与推荐页同一套：headlineLarge 大标题 + 圆形静默动作）
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 14.dp, top = 6.dp, bottom = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "我的",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                IconButton(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "设置",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // 头像（顶部留白后整体下移）
         item {
             if (userState.isLoggedIn) {
-                LoggedInHeader(userState = userState, onOpenSettings = onOpenSettings)
+                LoggedInHeader(
+                    userState = userState,
+                    onOpenAccount = { showAccountSheet = true },
+                )
             } else {
-                NotLoggedInHeader(onLogin = onOpenLogin, onOpenSettings = onOpenSettings)
+                NotLoggedInHeader(onLogin = onOpenLogin)
             }
         }
 
         // 听歌统计
         item {
+            // 统计卡不再用 primaryContainer：整页只有它是饱和色块，
+            // 与周围的中性卡片放在一起会把"我喜欢的音乐""最近播放"压下去。
+            // 改为中性容器 + 数字用 primary 强调，层级靠字号与颜色区分。
             Surface(
                 onClick = onOpenStats,
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.primaryContainer,
-                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                shape = AppShapes.of(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                contentColor = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
@@ -157,16 +224,30 @@ fun LibraryScreen(
                         Text(
                             text = "累计听歌时长",
                             style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = formatListenTime(userState.totalListenSeconds),
-                            style = MaterialTheme.typography.headlineSmall,
-                        )
+                        // 时长变化时用交叉淡入代替硬切：
+                        // 这个数字会在听歌过程中增长，"跳变"比"淡入"更刺眼
+                        AnimatedContent(
+                            targetState = formatListenTime(userState.totalListenSeconds),
+                            transitionSpec = {
+                                fadeIn(tween(260)) togetherWith fadeOut(tween(180))
+                            },
+                            label = "listen_time",
+                        ) { text ->
+                            Text(
+                                text = text,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                     Text(
                         text = "查看近七日 ›",
                         style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
@@ -175,7 +256,7 @@ fun LibraryScreen(
         // 块一：我喜欢的音乐（独立成块）
         likedPlaylist?.let { liked ->
             item {
-                SectionTitle("我喜欢的音乐", modifier = Modifier.padding(top = 8.dp))
+                SectionTitle("我喜欢的音乐")
             }
             item {
                 BlockCard {
@@ -187,7 +268,7 @@ fun LibraryScreen(
         // 块二：最近播放（独立成块）
         if (userState.isLoggedIn && history.isNotEmpty()) {
             item {
-                SectionTitle("最近播放", modifier = Modifier.padding(top = 8.dp))
+                SectionTitle("最近播放")
             }
             item {
                 BlockCard {
@@ -225,7 +306,7 @@ fun LibraryScreen(
         // 块二：创建的歌单
         item {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 SectionTitle("创建的歌单", modifier = Modifier.weight(1f))
@@ -263,7 +344,7 @@ fun LibraryScreen(
         // 块三：收藏的歌单
         if (subscribedPlaylists.isNotEmpty()) {
             item {
-                SectionTitle("收藏的歌单", modifier = Modifier.padding(top = 8.dp))
+                SectionTitle("收藏的歌单")
             }
             item {
                 BlockCard {
@@ -276,7 +357,7 @@ fun LibraryScreen(
 
         // 块四：本地歌单（置于底部）
         item {
-            SectionTitle("本地", modifier = Modifier.padding(top = 8.dp))
+            SectionTitle("本地")
         }
         item {
             BlockCard {
@@ -314,10 +395,106 @@ fun LibraryScreen(
 
 }
 
+/**
+ * 账号信息面板。
+ *
+ * 只放"看一眼"和"退出"两类操作：更细的编辑（头像/昵称）属于官方账号体系，
+ * 第三方客户端不应代劳，所以这里保持只读。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LoggedInHeader(userState: UserState, onOpenSettings: () -> Unit) {
+private fun AccountPanel(userState: UserState, onLogout: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 24.dp, bottom = 28.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (userState.avatarUrl.isNotBlank()) {
+                CoverImage(
+                    url = userState.avatarUrl,
+                    modifier = Modifier.size(64.dp).clip(CircleShape),
+                    contentDescription = userState.nickname,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Default.Person,
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp).clip(CircleShape),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(16.dp))
+            Column {
+                Text(
+                    text = userState.nickname.ifBlank { "网易云用户" },
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (userState.level > 0) {
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                text = "Lv.${userState.level}",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = "UID ${userState.userId}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+        Spacer(Modifier.height(8.dp))
+
+        // 退出登录：放在最下方、用 error 色，避免与普通操作混淆
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(AppShapes.of(14.dp))
+                .clickable(onClick = onLogout)
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.width(14.dp))
+            Text(
+                text = "退出登录",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoggedInHeader(userState: UserState, onOpenAccount: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            // 点头像/昵称即可查看账号信息与退出登录 ——
+            // 这两个动作原来只能从「设置 → 账号」绕进去，
+            // 而"我的"页本来就是账号的门面，入口应该在这里。
+            .clickable(onClick = onOpenAccount)
+            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (userState.avatarUrl.isNotBlank()) {
@@ -340,16 +517,21 @@ private fun LoggedInHeader(userState: UserState, onOpenSettings: () -> Unit) {
             modifier = Modifier.weight(1f),
             style = MaterialTheme.typography.titleMedium,
         )
-        IconButton(onClick = onOpenSettings) {
-            Icon(Icons.Default.Settings, contentDescription = "设置")
-        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            modifier = Modifier.size(20.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
 @Composable
-private fun NotLoggedInHeader(onLogin: () -> Unit, onOpenSettings: () -> Unit) {
+private fun NotLoggedInHeader(onLogin: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -365,9 +547,6 @@ private fun NotLoggedInHeader(onLogin: () -> Unit, onOpenSettings: () -> Unit) {
             style = MaterialTheme.typography.titleMedium,
         )
         Button(onClick = onLogin) { Text("登录") }
-        IconButton(onClick = onOpenSettings) {
-            Icon(Icons.Default.Settings, contentDescription = "设置")
-        }
     }
 }
 
@@ -483,9 +662,9 @@ private fun BlockCard(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clip(MaterialTheme.shapes.large)
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .padding(horizontal = 20.dp, vertical = 4.dp)
+            .clip(AppShapes.of(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainer)
             .padding(vertical = 6.dp),
     ) {
         content()

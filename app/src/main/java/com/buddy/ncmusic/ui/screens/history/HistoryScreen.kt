@@ -102,7 +102,7 @@ fun HistoryScreen(
                     contentPadding = PaddingValues(bottom = rememberBottomSafeSpace()),
                 ) {
                 itemsIndexed(songs) { index, song ->
-                    SongListItem(song = song, onClick = { onPlay(songs, index) }, onArtistClick = onOpenArtist)
+                    SongListItem(song = song, onClick = { onPlay(songs, index) }, onArtistClick = onOpenArtist, showDivider = index > 0)
                 }
             }
             }

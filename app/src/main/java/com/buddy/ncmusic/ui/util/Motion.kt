@@ -9,6 +9,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+
 
 /**
  * 「减少动态效果」偏好。
@@ -87,12 +95,59 @@ object Md3Motion {
         reduceMotion: Boolean,
         durationMillis: Int = Medium2,
         easing: CubicBezierEasing = EmphasizedDecelerate,
-    ): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(durationMillis, easing = easing)
+        delayMillis: Int = 0,
+    ): FiniteAnimationSpec<T> = if (reduceMotion) {
+        snap()
+    } else {
+        tween(durationMillis, delayMillis = delayMillis, easing = easing)
+    }
 
     /** 非空间属性（淡入淡出/颜色）默认使用 short4。 */
     fun <T> effects(
         reduceMotion: Boolean,
         durationMillis: Int = Short4,
         easing: CubicBezierEasing = Standard,
-    ): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(durationMillis, easing = easing)
+        delayMillis: Int = 0,
+    ): FiniteAnimationSpec<T> = if (reduceMotion) {
+        snap()
+    } else {
+        tween(durationMillis, delayMillis = delayMillis, easing = easing)
+    }
+}
+
+/**
+ * 按压缩放反馈。
+ *
+ * 触摸类卡片在 Material 3 里的标准做法是「按下时轻微缩小 + 松手回弹」，
+ * 让"点到了"这件事**在视觉上先于导航发生**。它比涟漪更克制，
+ * 在卡片这种大目标上尤其有效 —— 涟漪在大圆角卡上往往只露出边角。
+ *
+ * 用法：
+ * ```kotlin
+ * Column(Modifier.pressScale(interactionSource).clickable(interactionSource, indication = null) { ... })
+ * ```
+ * 注意 `indication = null`：缩放本身已经是反馈，再叠涟漪会显得吵。
+ * 若希望保留涟漪，直接 `clickable {}` 即可，[pressScale] 仍独立生效。
+ */
+@Composable
+fun Modifier.pressScale(
+    interactionSource: MutableInteractionSource,
+    reduceMotion: Boolean = rememberReduceMotion(),
+    pressedScale: Float = 0.97f,
+): Modifier {
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed && !reduceMotion) pressedScale else 1f,
+        animationSpec = if (reduceMotion) {
+            snap()
+        } else {
+            // 按下要"立刻跟手"，松手要有回弹余韵，因此两者用不同刚度
+            spring(dampingRatio = 0.62f, stiffness = if (pressed) 1400f else 520f)
+        },
+        label = "press_scale",
+    )
+    return this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
 }

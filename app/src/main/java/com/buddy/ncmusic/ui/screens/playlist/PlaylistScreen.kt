@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import kotlinx.coroutines.flow.map
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -77,6 +79,10 @@ fun PlaylistScreen(
     val songs by vm.songs.collectAsState()
     val loading by vm.loading.collectAsState()
     val error by vm.error.collectAsState()
+    // 用于判断歌单是否自建（只有自建歌单可增删歌曲）
+    val myUid by NCMusicApp.instance.userPreferences.userStateFlow
+        .map { it.userId }
+        .collectAsState(initial = 0L)
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -193,11 +199,35 @@ fun PlaylistScreen(
                             )
                         }
                     }
-                    items(filtered, key = { it.id }) { song ->
+                    itemsIndexed(filtered, key = { _, song -> song.id }) { index, song ->
                         SongListItem(
                             song = song,
-                            onClick = { onPlay(filtered, filtered.indexOf(song)) },
+                            // 直接用循环下标：`indexOf` 在列表里是 O(n)，
+                            // 100 首的歌单每行都算一次，滚动时会累积成明显的卡顿
+                            onClick = { onPlay(filtered, index) },
                             onArtistClick = onOpenArtist,
+                            showDivider = index > 0,
+                            // 从歌单移除：只有自建歌单可写，收藏来的歌单不显示
+                            // 判定"可写"用 subscribed 而不是 creator.userId：
+                            // `/playlist/detail` 的返回里 creator 常常为空或只带 nickname，
+                            // 用 uid 比对会一律判为"别人的歌单"，导致入口消失。
+                            // subscribed=false 就是自己创建的（官方语义）。
+                            // 「我喜欢的音乐」不允许移除单曲。
+                            onRemoveFromPlaylist = playlist
+                                ?.takeIf { !it.subscribed && it.specialType != 5 }
+                                ?.let { own ->
+                                    {
+                                        scope.launch {
+                                            NCMusicApp.instance.musicRepository
+                                                .manipulatePlaylistTracks(
+                                                    playlistId = own.id,
+                                                    songId = song.id,
+                                                    add = false,
+                                                )
+                                            vm.load()
+                                        }
+                                    }
+                                },
                         )
                     }
                 }

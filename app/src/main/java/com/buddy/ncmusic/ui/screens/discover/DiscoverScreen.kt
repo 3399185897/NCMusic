@@ -51,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -199,6 +200,19 @@ fun DiscoverScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
+        // 页头：与推荐页 / 我的页同一套（headlineLarge 大标题）。
+        // 有搜索关键词时收起 —— 此时屏幕的主动作是"输入与结果"，
+        // 再挂一个大标题只会把结果往下挤。
+        if (query.isBlank()) {
+            Text(
+                text = "发现",
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 2.dp),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+
         // ⚠️ 输入框必须是**唯一且位置固定**的实例。
         //
         // 此前它分别出现在「空查询」与「有关键词」两个分支里，
@@ -279,6 +293,7 @@ fun DiscoverScreen(
                                 song = song,
                                 onClick = { onPlay(results, index) },
                                 onArtistClick = onOpenArtist,
+                                showDivider = index > 0,
                             )
                         }
                     }
@@ -428,8 +443,8 @@ private fun RankCard(
     onOpenPlaylist: (Long) -> Unit,
 ) {
     Surface(
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = AppShapes.of(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.onSurface,
         modifier = Modifier
             .width(pageWidth)
@@ -441,7 +456,9 @@ private fun RankCard(
                 text = rank.name,
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+                // 与首页小节标题同一规则：标题用 onSurface，强调色只留给动作
+                color = MaterialTheme.colorScheme.onSurface,
                 // 榜单名长短不一（"云音乐飙升榜" vs "云音乐中文说唱榜"），
                 // 不限制行数会与右侧「查看更多」争夺宽度并挤压布局。
                 // 限 1 行 + 省略号：始终单行显示，长名超出部分以 … 收尾。

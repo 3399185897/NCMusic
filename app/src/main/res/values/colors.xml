@@ -2,4 +2,12 @@
 <resources>
     <!-- 品牌主色（网易云红），仅作为莫奈取色不可用时的 fallback 强调色 -->
     <color name="brand_red">#D13030</color>
+    <!--
+      启动窗口底色。
+      原先直接用品牌红，再叠加同样为红色的自适应图标背景 ——
+      冷启动时会出现一整块红色"应用图标遮罩"，与随后的 Compose 界面割裂。
+      现在改为与 Compose 表面同色（浅色近白 / 深色纯黑），并去掉启动图标，
+      过渡到首帧时不会闪红色。
+    -->
+    <color name="launch_bg">#FFFBFF</color>
 </resources>

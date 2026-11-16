@@ -38,3 +38,6 @@ ncmusic-release.keystore
 # ---- 但 releases/ 下用于分发编译产物的 APK 需要提交 ----
 !releases/
 !releases/*.apk
+
+# ---- 构建产物：仓库根目录下的中间版本不入库（正式包在 releases/）----
+/NCMusic-*.apk

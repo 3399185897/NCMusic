@@ -34,6 +34,7 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.AnimatedContent
 import com.buddy.ncmusic.ui.theme.AppShapes
 import com.buddy.ncmusic.ui.theme.contrastOn
+import com.buddy.ncmusic.ui.theme.orAccent
 import com.buddy.ncmusic.ui.util.Md3Motion
 import com.buddy.ncmusic.ui.util.rememberReduceMotion
 import com.buddy.ncmusic.ui.components.WaveProgressBar
@@ -75,6 +76,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -83,6 +85,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -138,6 +141,17 @@ fun PlayerScreen(
     var qualitySheetOpen by remember { mutableStateOf(false) }
     // 歌曲详情面板（下载 / 分享 / 关于）
     var songDetailSheet by remember { mutableStateOf(false) }
+    // 分享按钮需要 Context（startActivity 走系统选择器）
+    val shareContext = LocalContext.current
+    val uiScope = rememberCoroutineScope()
+    val repoRef = NCMusicApp.instance.musicRepository
+    // 「收藏到歌单」：歌单列表按需拉取，避免每次打开播放器都请求一次
+    var myPlaylists by remember { mutableStateOf<List<com.buddy.ncmusic.data.model.Playlist>>(emptyList()) }
+    var playlistPickerOpen by remember { mutableStateOf(false) }
+    var playlistLoading by remember { mutableStateOf(false) }
+    var playlistHint by remember { mutableStateOf<String?>(null) }
+    // 组合作用域里不能调用 suspend 的 flow.first()，拉歌单时顺手记下 uid
+    var myUid by remember { mutableStateOf(0L) }
     // 详情面板内的下载音质选择
     var detailQualityPicker by remember { mutableStateOf(false) }
     // 「关于歌曲」信息弹窗
@@ -226,7 +240,9 @@ fun PlayerScreen(
 
         // 封面尺寸：0.34 倍可用高度，限制在 120~260dp。
         // 上限保证大屏上与原有视觉规格一致；下限保证极矮屏仍有可辨识的封面。
-        val coverSize = (boxMaxHeight * 0.34f).coerceIn(120.dp, 260.dp)
+        // 0.34 → 0.32：360×640dp 的屏上，0.34 会让「歌名+歌手+规格+进度区」
+        // 超出可用高度，末行被裁。降到 0.32 让出约 13dp。
+        val coverSize = (boxMaxHeight * 0.32f).coerceIn(120.dp, 260.dp)
         val offsetY = remember { Animatable(0f) }
 
         // ---------- 封面连续转场参数 ----------
@@ -293,47 +309,30 @@ fun PlayerScreen(
     ) {
         // 内边距加在内容层而非背景层 —— 渐变背景得以延伸到状态栏下
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+            // 顶栏用「Box 叠加」而非 Row，标题才能**严格水平居中**。
+            //
+            // 之前是 Row(返回 + Text(weight 1f, 居中) + 音质)：
+            // 左侧固定 48dp、右侧宽度随音质文案变化（「标准」2 字 /「超清母带」4 字），
+            // 于是标题会随音质档位左右漂移 —— 换个音质，标题位置就变一次。
+            Box(Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // 音质已移到歌手名下方，顶栏只保留「返回 + 标题」。
+                    // 右侧留出与返回键等宽的空白，配合外层 Box 的居中对齐
+                    Spacer(Modifier.width(48.dp))
                 }
                 Text(
                     text = "正在播放",
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.align(Alignment.Center),
                     style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center,
                 )
-                Box {
-                    // 不用 IconButton —— 它是**固定 48dp** 的图标按钮容器，
-                    // 而音质文案长度差异很大（「标准」2 字 →「超清母带」4 字），
-                    // 4 字时会超出 48dp 被裁掉，表现为「文字显示不全」。
-                    // 改用自适应宽度的可点击 Box，并保留 ≥48dp 的触摸高度。
-                    Box(
-                        modifier = Modifier
-                            .clip(AppShapes.of(10.dp))
-                            .clickable(enabled = !isLocalTrack) { qualitySheetOpen = true }
-                            .heightIn(min = 48.dp)
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = qualityText,
-                            style = MaterialTheme.typography.labelMedium,
-                            maxLines = 1,
-                            softWrap = false,
-                            color = if (isLocalTrack) {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                    // 音质面板由页面底部统一弹出（见下方 ModalBottomSheet），
-                    // 这里不再挂 DropdownMenu
-                }
             }
 
             // ============================================================
@@ -366,6 +365,110 @@ fun PlayerScreen(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Spacer(Modifier.height(8.dp))
+
+                        // ---------- 收藏到歌单 ----------
+                        DetailAction(
+                            icon = Icons.Filled.Add,
+                            label = "收藏到歌单",
+                            enabled = !isLocalTrack,
+                        ) {
+                            playlistPickerOpen = !playlistPickerOpen
+                            if (playlistPickerOpen && myPlaylists.isEmpty()) {
+                                playlistLoading = true
+                                uiScope.launch {
+                                    val uid = prefs.userStateFlow.first().userId
+                                    myUid = uid
+                                    when (val r = repoRef.userPlaylists(uid)) {
+                                        is com.buddy.ncmusic.util.ApiResult.Success -> {
+                                            myPlaylists = r.data
+                                            playlistLoading = false
+                                        }
+                                        is com.buddy.ncmusic.util.ApiResult.Error -> {
+                                            playlistLoading = false
+                                            playlistHint = "歌单列表加载失败：${r.message}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (playlistPickerOpen) {
+                            if (playlistLoading) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 40.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    ExpressiveLoadingIndicator(modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(
+                                        text = "正在读取歌单…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            // 只能加到「我创建的歌单」：收藏来的歌单没有写权限
+                            val mine = myPlaylists.filter { it.creator?.userId == myUid }
+                                .ifEmpty { myPlaylists.filter { it.creator?.userId != 0L } }
+                            mine.forEach { pl ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                        .clickable {
+                                            uiScope.launch {
+                                                val r = repoRef.manipulatePlaylistTracks(
+                                                    playlistId = pl.id,
+                                                    songId = sheetSong.id,
+                                                    add = true,
+                                                )
+                                                playlistHint = when (r) {
+                                                    is com.buddy.ncmusic.util.ApiResult.Success ->
+                                                        if (r.data) "已收藏到「${pl.name}」"
+                                                        else "收藏失败：服务端拒绝了该操作"
+                                                    is com.buddy.ncmusic.util.ApiResult.Error ->
+                                                        "收藏失败：${r.message}"
+                                                }
+                                                playlistPickerOpen = false
+                                            }
+                                        }
+                                        .padding(horizontal = 40.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = pl.name,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    Text(
+                                        text = "${pl.trackCount} 首",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (mine.isEmpty() && !playlistLoading) {
+                                Text(
+                                    text = "没有可写入的歌单（只能添加到自建歌单）",
+                                    modifier = Modifier.padding(horizontal = 40.dp, vertical = 10.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+
+                        playlistHint?.let { hint ->
+                            Text(
+                                text = hint,
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
 
                         // ---------- 下载 ----------
                         DetailAction(
@@ -622,7 +725,7 @@ fun PlayerScreen(
                     // 固定 124dp 在矮屏上会与控制区争抢空间，把播放按钮挤到边缘。
                     // 下限 96dp 保证大字体下四行歌词仍能显示，上限 124dp 与原值一致。
                     modifier = Modifier
-                        .height((boxMaxHeight * 0.16f).coerceIn(96.dp, 124.dp))
+                        .height((boxMaxHeight * 0.16f).coerceIn(92.dp, 112.dp))
                         .fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
@@ -671,54 +774,79 @@ fun PlayerScreen(
                     }
                 }
                 Spacer(Modifier.height(8.dp))
+                // 歌名：整行居中，不放任何按钮 —— 操作入口统一收到进度条上方那一行，
+                // 标题区保持纯粹的"信息"语义。
                 Text(
                     text = song.name,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                    textAlign = TextAlign.Center,
                     style = MaterialTheme.typography.titleLarge,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    text = song.artistNames,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clickable {
-                        song.artists.firstOrNull()?.id?.let(onOpenArtist)
-                    },
-                )
-
-                // 音频规格（采样率 / 位深）—— 小字、弱化，不抢主信息
+                // 歌手与音频规格**同一行**。
                 //
-                // 跟随**当前所选音质**显示对应规格 ——
-                // 此前按歌曲对象的最高码率推导，但列表接口经常缺失
-                // `hr` / `maxbr` 字段，推算结果偏低，
-                // 会把能播 96kHz/24bit 的歌唱成 48kHz/16bit，与实听不符。
-                // 实际命中档位与所选不同（如非会员被降级）时由 Snackbar 提示。
-                AudioQuality.of(state.quality)?.specText?.let { spec ->
-                    Spacer(Modifier.height(2.dp))
+                // 原先规格另起一行，在 360×640dp 的屏上信息列总高超出可用高度，
+                // 这一行会被下方的进度区裁掉半个字（截图可见"96kHz/24bit"只剩上半截）。
+                // 合到一行后省 16dp，同时信息密度更高。
+                //
+                // 规格跟随**当前所选音质**：按歌曲对象最高码率推导会偏低
+                // （列表接口常缺 hr / maxbr 字段），与实听不符。
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = spec,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        text = song.artistNames,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .clickable {
+                                song.artists.firstOrNull()?.id?.let(onOpenArtist)
+                            },
                     )
+                    // 音质胶囊与歌手名同行。
+                    //
+                    // 原计划放到歌手"下方"独立一行，但信息列在 360×640dp 的屏上
+                    // 已经没有余量：新增 32dp 后 Box 被父约束压到 18px 高，
+                    // 文字直接被裁成一条。放在同一行既不增加高度，
+                    // 又保住了"音质属于这首歌"的语义（也更靠近歌名）。
+                    // 码率文本不再单列 —— 胶囊里已经包含档位名，重复反而占宽。
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            // 用 surfaceContainerHigh：surfaceContainer 在浅色底上
+                            // 几乎与背景同色，胶囊只剩文字，看不出"可点"
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .clickable(enabled = !isLocalTrack) { qualitySheetOpen = true }
+                            .padding(horizontal = 10.dp, vertical = 3.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = qualityText,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            softWrap = false,
+                            color = if (isLocalTrack) {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                 }
             }
 
             // 进度与控制（紧凑贴近内容区）
             Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
-                // 进度条上方：仅保留左侧的歌曲详情入口。
-                //
-                // 原先右侧还有一个「桌面歌词」开关，现已移入详情面板 ——
-                // 两者都是"对当前歌曲 / 播放器的一次性操作"，
-                // 归到同一个入口更省空间，也让进度条上方不再散落多个按钮。
+                // 操作行：左侧「详情」，右侧「分享」—— 两端对称，
+                // 中间留白，避免两个按钮挤在一起抢进度条的注意力。
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 歌曲详情入口：下载 / 分享 / 桌面歌词 / 关于
                     IconButton(onClick = { songDetailSheet = true }) {
                         Icon(
                             imageVector = Icons.Filled.MoreVert,
@@ -726,7 +854,29 @@ fun PlayerScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = {
+                        // 与歌曲详情面板里的分享同一口径：歌名 + 歌手 + 官方链接
+                        val text = "${song.name} - ${song.artistNames}\n" +
+                            "https://music.163.com/song?id=${song.id}"
+                        runCatching {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, text)
+                            }
+                            shareContext.startActivity(
+                                Intent.createChooser(send, "分享歌曲"),
+                            )
+                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Filled.Share,
+                            contentDescription = "分享",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
+
                 // 波浪进度条：时间与波形同行（拖动时左侧时间实时跟随）
                 val durationMs = state.duration.coerceAtLeast(1L)
                 var scrubRatio by remember { mutableFloatStateOf(-1f) }
@@ -817,7 +967,11 @@ fun PlayerScreen(
                             ),
                             label = "playCorner",
                         )
-                        val playAccent = coverColor ?: MaterialTheme.colorScheme.primary
+                        // 封面是灰调时（黑白人像、老唱片等）回落到主题色：
+                        // 否则播放键会和背景糊成一片，主操作失去焦点。
+                        val playAccent = coverColor
+                            ?.orAccent(MaterialTheme.colorScheme.primary)
+                            ?: MaterialTheme.colorScheme.primary
 
                         Box(
                             modifier = Modifier

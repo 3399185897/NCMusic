@@ -1,289 +1,91 @@
 <div align="center">
 
-# 🎵 云音 NCMusic
+# 云音 NCMusic
 
-**极简 · 轻量的网易云音乐第三方 Android 客户端**
+**网易云音乐第三方 Android 客户端**
 
-使用 Jetpack Compose + Material 3 构建 · 支持 Android 12+ 莫奈动态取色 🎨
+Jetpack Compose · Material 3 · Media3 ExoPlayer
 
-[![Platform](https://img.shields.io/badge/Platform-Android%208.0%2B-3DDC84?logo=android&logoColor=white)](#-构建运行)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white)](#-技术栈)
-[![Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)](#-技术栈)
-[![Media3](https://img.shields.io/badge/Media3-ExoPlayer-FF6F00)](#-技术栈)
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](#构建)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white)](#技术栈)
+[![Compose](https://img.shields.io/badge/Compose-Material%203-4285F4?logo=jetpackcompose&logoColor=white)](#技术栈)
 [![License](https://img.shields.io/badge/License-GPL--3.0-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v1.3.0-2ea44f)](../../releases)
-
-[✨ 功能特性](#-功能特性) · [📸 界面预览](#-界面预览) · [🚀 构建运行](#-构建运行) · [⚠️ 免责声明](#️-免责声明)
 
 </div>
 
 ---
 
-## 📸 界面预览
+## 截图
 
-| 🏠 推荐 | 🔍 发现 | 👤 我的 | ▶️ 播放 |
-| :---: | :---: | :---: | :---: |
-| ![推荐](screenshots/home.jpg) | ![发现](screenshots/discover.jpg) | ![我的](screenshots/library.jpg) | ![播放](screenshots/player.jpg) |
-| 每日推荐 · 雷达歌单 Carousel | 热搜 · 排行榜 | 累计时长 · 我喜欢的 · 歌单 | 播放器 · 歌词 · 波浪进度条 |
+| 启动 | 推荐 | 播放器 |
+| :---: | :---: | :---: |
+| ![启动](screenshots/launch.jpg) | ![推荐](screenshots/home.jpg) | ![播放器](screenshots/player.jpg) |
+
+| 歌词 | 我的 | 设置 |
+| :---: | :---: | :---: |
+| ![歌词](screenshots/lyric.jpg) | ![我的](screenshots/library.jpg) | ![设置](screenshots/settings.jpg) |
 
 ---
 
-## ✨ 功能特性
+## 功能
 
-### 🔐 三种登录方式
+**登录** — 扫码 · 手机号密码/验证码 · Cookie 粘贴
 
-| 方式 | 说明 |
+**播放** — ExoPlayer 后台播放与通知栏控制 · 六档音质（标准 → 超清母带）· 顺序/列表/单曲/随机 · 播放队列 · 定时关闭 · 本地音乐
+
+**歌词** — 全屏滚动（逐行高亮 + 翻译）· 桌面悬浮歌词（可拖动 / 调色 / 锁定）· 进入即定位当前行，手动滑动后暂停跟随、4 秒自动恢复
+
+**音效** — 10 段可视化均衡器 · 响度增强 · USB 独占输出 · 硬解/软解切换
+
+**界面** — 莫奈动态取色 · AMOLED 纯黑 · 药丸悬浮底栏 · 悬浮岛（与底栏间距 0–40dp 可调）· 播放器封面取色 · 云朵揭幕启动动画
+
+**其它** — 歌曲下载 · 收藏到歌单 · 分享 · 缓存上限与清理 · 听歌统计
+
+---
+
+## 构建
+
+需要 JDK 17 与 Android SDK（compileSdk 36）。
+
+```bash
+./gradlew assembleRelease
+```
+
+签名信息放在 `keystore.properties`（不入库）：
+
+```properties
+storeFile=你的.jks
+storePassword=***
+keyAlias=***
+keyPassword=***
+```
+
+Windows 下建议加 `--no-build-cache`，规避构建缓存锁。
+
+## 技术栈
+
+| 层 | 选型 |
 | :--- | :--- |
-| 📱 **扫码登录** | 手机网易云音乐 App 扫码确认，无需输入密码 |
-| ☎️ **手机号登录** | 支持「密码登录 / 验证码登录」二级切换 |
-| 🍪 **Cookie 登录** | 可靠性最高，从网页端复制 Cookie 粘贴即可 |
+| UI | Jetpack Compose + Material 3 |
+| 播放 | Media3 ExoPlayer · 自建 DirectApi（eapi / weapi） |
+| 数据 | DataStore · 本地缓存 · Coil |
+| 架构 | 单 Activity + Compose Navigation + 常驻 Pager |
 
-### 🎧 播放能力
+## 致谢
 
-- 🎼 基于 **Media3 ExoPlayer**，后台播放 + 通知栏控制（下一曲/上一曲完整支持）
-- 🎚 音质切换：标准 / 较高 / 极高 / 无损 FLAC / Hi-Res / 超清母带
-- 🔁 播放模式：顺序 · 列表循环 · 单曲循环 · 随机
-- 📜 播放队列 · 定时关闭 · MiniPlayer 左右滑动切歌
-- 🎵 本地音乐扫描与播放
+- 启动动画机制参考 [FluxDown](https://github.com/zerx-lab/FluxDown)（Apache-2.0）的 `LaunchReveal`
+- 界面语言参考 SukiSU-Ultra 与 Material 3
 
-### 📝 歌词系统
+## 免责声明
 
-- 🎬 **全屏滚动歌词**，随进度高亮与自动滚动
-- 🪟 **桌面悬浮歌词**：透明无背景、可自由拖动、自定义颜色与字号、支持锁定位置
-- ✨ 当前行高亮加粗 + 下一行半透明预览
+本项目仅供学习与个人使用，所有音乐内容版权归网易云音乐及版权方所有。请勿用于商业用途，因使用本软件产生的任何后果由使用者自行承担。项目使用非公开接口，存在稳定性风险；如权利人认为侵权，请通过 Issue 联系，将立即配合处理。
 
-### 🎛 音效增强
+## 开源许可
 
-- 📈 **10 段可视化均衡器** —— 直接在曲线上拖动调节
-- 🔊 响度增强（统一不同歌曲响度）· 音量增益
-- 🔌 USB 独占输出 · 硬解 / 软解切换
-
-### 🎨 界面
-
-- 🌈 Material 3 设计语言 + **莫奈动态取色**（Material You）
-- 🎨 18 种自定义主题色 · 🌗 深色模式 / 跟随系统（与取色互斥）
-- 🎠 **Material 3 Hero Carousel** —— 雷达歌单精选 7 张官方账号级推荐，中央主卡与两侧压缩卡片平滑切换
-- 📊 MD3 规范控件：分段滑块（带停靠点）、Loading 指示器、波纹进度环
-- 💫 播放器自底部平滑升起的 Spring 动画 · 收起时悬浮岛联动淡入
-- 🌀 正在播放歌曲跳动指示器
-
-### 🔍 内容浏览
-
-- 📅 每日推荐 · 🎯 个性化歌单
-- 📡 **官方雷达歌单**：固定 7 张账号级推荐，使用官方 Carousel 吸附与尺寸插值
-- 🏆 官方排行榜（飙升榜 / 热歌榜 / 原创榜 / 新歌榜）
-- 🔎 搜索（热搜 · 搜索历史 · 歌单内搜索）
-- 💚 歌单收藏 · 歌手详情页
-
-> 🧹 **已裁剪**（去冗余）：评论、动态、云盘、MV、签到、关注、私信、付费点播等。
-
----
-
-## 📦 更新日志
-
-### v1.3.0
-
-**🎨 Material 3 大改版**
-
-- 全新“声波云”应用图标与单色主题图标，统一用于启动、登录和关于页。
-- 启动阶段加入品牌遮罩，并并行预热排行榜、首页推荐、雷达歌单与热搜。
-- 雷达歌单改为官方 Material 3 Hero Carousel，精选 6 个歌单。
-- 设置页分类图标统一使用主题色；登录页与关于页按参考站重构。
-- 新增首页品牌问候（已移除）、MD3 Snackbar、层级化 surface 与统一动效令牌。
-
-### v1.2.1
-
-**🐛 修复**
-
-- 🔎 修复发现页中文拼音输入被打断的问题：输入框不再随搜索状态切换而重建，
-  输入法组词期间不触发搜索；补充搜索键、清空按钮与并发请求代次保护。
-- ⬇️ 修复下载任务在详情页关闭后被页面作用域取消、导致全局下载状态永久卡住的问题。
-- 🔔 修复音质降级提示从未显示的问题；播放错误与提示统一改为 Material 3 Snackbar。
-- 🚀 修复“启动页”偏好在导航图创建后才读取、导致设置可能不生效的时序问题。
-- 🖼 修复自适应图标圆角资源引用错误。
-
-**🎨 Material 3**
-
-- 统一使用 MD3 standard / emphasized 运动曲线与时长令牌，移除旧版 `FastOutSlowInEasing` 与弹跳过冲。
-- 底部导航改用填充/描边图标与标准指示器；歌曲行、歌单卡、榜单卡、统计卡改用 MD3 surface 角色与形状令牌。
-- 迷你播放器改用 tonal / filled icon button，补足 48dp 触控目标，并按背景亮度自动选择高对比图标。
-- 设置页主题色与歌词色色块补足 48dp 触控区域；完善无障碍“减少动态效果”适配。
-
-### v1.1.0
-
-**🎨 界面与交互**
-
-- 🧩 歌单区改为**正方形无缝拼接墙** —— 18 个大小不一的正方形按预先验证的铺砌布局
-  恰好铺满一个 3:2 矩形，零间隙、零重叠；铺砌方案经逐像素覆盖校验
-- 📡 歌单墙数据源接入**私人雷达**（置于最大方块），其余位置由推荐歌单自动补齐并去重
-- 📊 设置页控件全面对齐 Material 3 规范：
-  - 滑块改为**带停靠点的分段轨道**，`steps` 由控件自身吸附，消除「拖动位置与显示数值不同步」
-  - 开关采用 MD3 角色配色（`outline` / `surfaceContainerHighest`）
-  - 加载指示器提供可见轨道与圆角线帽
-- ⚙️ 播放器改为**同树覆盖层**：展开/收起为整页 Spring 位移动画，不再走路由转场，
-  显著降低切换开销
-- 🌊 悬浮岛进度环加入可选波浪样式
-
-**🐛 修复**
-
-- 修复歌单墙封面重复（数据源不足 18 条时的循环取用）
-- 修复缓存大小滑块刻度与数值错位（原刻度非等距排布）
-- 修复听歌统计卡因文案过长而高度不一
-- 修复播放器背景透出下层页面、以及底部导航栏遮挡播放器
-- 修复悬浮岛关闭时因组件重建导致的取色闪变
-
----
-
-## 🛠 技术栈
-
-| 分类 | 技术 |
-| :--- | :--- |
-| 🧩 **语言** | Kotlin 2.3.21 |
-| 🎨 **UI** | Jetpack Compose（BOM 2026.04.01）+ Material 3 + 莫奈动态取色 |
-| 🌐 **网络** | OkHttp + KotlinX Serialization（**无 Retrofit**，直连官方接口） |
-| 🖼 **图片** | Coil（比 Glide 更轻、更 Compose 友好） |
-| ▶️ **播放** | Media3 ExoPlayer + MediaSessionService（前台服务） |
-| 💾 **存储** | DataStore Preferences（替代 Room，减少依赖） |
-| 🔨 **构建** | AGP 8.13.0 · Gradle 8.14.3 · compileSdk/targetSdk 36 · minSdk 24 · JDK 17 |
-
----
-
-## 🚀 构建运行
-
-1. 📥 用 **Android Studio**（Hedgehog 或更新版本）打开本目录
-2. ⏳ 等待 Gradle Sync 完成（首次会下载依赖）
-3. 📱 连接真机或启动模拟器（Android 8.0+ 建议，Android 12+ 体验莫奈取色）
-4. ▶️ 点击 Run 运行
-
-> 💡 **提示**：请将项目放在**不含空格**的路径下（如 `D:\NCMusic`），部分 Gradle 任务对空格路径敏感。
-
----
-
-## 🌐 网络实现
-
-项目**直连网易云官方接口**（`https://music.163.com`），不依赖任何第三方中转服务。
-
-| 模块 | 位置 | 说明 |
-| :--- | :--- | :--- |
-| 🔐 请求加密 | `core/network/crypto/WeapiCrypto.kt` | weapi 加密（AES-CBC 双层 + RSA） |
-| 📡 接口调用 | `core/network/direct/DirectApi.kt` | 优先明文通道，必要时回退 weapi |
-| 📦 数据解析 | `data/model/` | KotlinX Serialization 数据类 |
-
-> ⚠️ 由于使用**非公开接口**，接口可能随时变更导致部分功能失效。若某功能异常，通常是官方接口调整所致，而非应用 Bug。
-
----
-
-## 🔑 登录说明
-
-登录页提供三种方式（顶部标签切换）：
-
-| 方式 | 说明 |
-| :--- | :--- |
-| 📱 **扫码登录** | 使用手机网易云音乐 App 扫码确认，无需输入密码 |
-| ☎️ **手机号登录** | 支持「密码登录 / 验证码登录」二级切换；可能触发官方风控 |
-| 🍪 **Cookie 登录** | **可靠性最高**。从浏览器已登录的网页端复制完整 Cookie（需含 `MUSIC_U`）粘贴即可 |
-
-> 🔒 **Cookie 等同于账号凭证**，请勿分享给他人，也不要在不可信环境粘贴。
->
-> 🛡 登录凭证仅保存在本机 DataStore（应用私有目录），**不会上传到任何服务器**。
-
----
-
-## 📁 目录结构
-
-```
-app/src/main/java/com/buddy/ncmusic/
-├── 🚀 NCMusicApp.kt           # Application，恢复登录态
-├── 🚪 MainActivity.kt         # 入口 Activity
-├── 🌐 core/network/           # 加密、直连接口、Cookie 注入
-├── 📦 data/
-│   ├── model/                 # DTO（@JsonNames 兼容多接口字段差异）
-│   ├── repository/            # 数据仓库
-│   └── local/                 # DataStore 登录态 / 设置
-├── ▶️ playback/               # ExoPlayer 管理器、前台服务、桌面歌词
-├── 🎨 ui/
-│   ├── theme/                 # MD3 + 莫奈取色
-│   ├── navigation/            # 导航图 + 底部导航
-│   ├── components/            # 通用组件（歌曲项 / 歌单卡 / MiniPlayer）
-│   └── screens/               # 首页 / 发现 / 我的 / 播放 / 设置 / 均衡器 …
-└── 🧰 util/                   # 歌词解析、结果封装、二维码生成
-```
-
----
-
-## 🗺 后续计划
-
-- [ ] 🎤 私人 FM / 心动模式
-- [x] 🌐 双语歌词（原词 + 翻译）
-- [x] 💾 本地缓存与离线播放
-- [ ] 💿 播放页封面临摹（黑胶唱片旋转动画）
-- [x] 🎚 音质设置持久化
-
----
-
-## ❓ 常见问题
-
-### 为什么无损 / 母带下载提示权限不足？
-
-下载档位由当前账号的会员权益、歌曲版权方策略共同决定。普通账号即使看到高档位，
-服务端仍可能只返回标准音质或拒绝下载地址。本项目**不会绕过平台的会员与版权限制**；
-下载前可在音质选择器中查看提示。
-
-### 发现页输入拼音时为什么不会立刻搜索？
-
-输入法仍在组词（`composition`）时，客户端会等待文字上屏后再发起搜索，避免拿
-`ni`、`nih` 这类半成品拼音请求接口。也可以按键盘上的“搜索”键立即提交。
-
----
-
-## ⚠️ 免责声明
-
-**本项目为个人学习与技术研究项目，与网易云音乐官方无任何关联。**
-
-1. 🚫 **用途限制**：仅供学习交流与技术研究，**严禁用于任何商业用途**。
-2. 📀 **数据来源**：所有音乐数据与版权内容均来源于网易云音乐，版权归原平台及权利人所有。本项目**不存储、不分发任何音乐文件**，仅作为客户端展示。
-3. 🔧 **接口风险**：项目使用非公开接口，存在稳定性与合规风险，使用者需自行承担。
-4. 🔐 **账号安全**：请勿在不可信环境登录账号。因使用本项目导致的账号异常、数据丢失等后果，作者不承担责任。
-5. 📮 **权利响应**：如权利人认为本项目侵犯其合法权益，请通过 Issue 联系，将**立即配合删除或调整**。
-
-> 🌍 若你所在地区或平台不允许此类项目存在，请勿使用或分发本项目。
-
----
-
-## 📄 开源许可
-
-本项目采用 **GNU General Public License v3.0 (GPL-3.0)** 授权，许可全文见 [LICENSE](LICENSE)。
-
-这意味着你可以自由使用、修改、分发本项目，但需遵守以下义务：
-
-- 🔄 若分发本项目或其**衍生作品**，必须同样以 **GPL-3.0** 授权开源
-- 📤 必须向接收者提供**完整源代码**（包括你的修改）
-- ©️ 必须保留原始版权声明与许可文本
-- 📝 修改后的版本需**注明改动内容**
-- ⛔ 不得附加 GPL 之外的额外限制
-
-```
-Copyright (C) 2026 Canelé (3399185897)
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-```
-
-> 🙏 第三方开源组件及其许可，已在应用内「设置 → 关于 → 开源许可」中列明（均为 Apache-2.0）。
-
----
+[GPL-3.0](LICENSE) © 2026 Canelé (3399185897)
 
 <div align="center">
 
-**⭐ 如果这个项目对你有帮助，欢迎点个 Star 支持一下！**
-
-Made with ❤️ by [Canelé](https://github.com/3399185897)
+**⭐ 如果这个项目对你有帮助，欢迎点个 Star**
 
 </div>
