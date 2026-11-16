@@ -90,8 +90,8 @@ fun AboutScreen(onBack: () -> Unit) {
     //  · updateVersion —— 纯版本号，交给更新检查做比较，**不能**掺别的字符
     //  · versionName    —— 展示用，附上 versionCode
     //
-    // 之所以要显示构建号：versionName 长期停在 1.2.1，
-    // 而同一版本号下已经出了十几个构建，出问题时无法判断装的是哪一个。
+    // 之所以要显示构建号：同一版本号下会连出多个构建（修 bug、调界面），
+    // 出问题时只报 versionName 无法判断装的是哪一个。
     val updateVersion = BuildConfig.VERSION_NAME
     val versionName = "$updateVersion (${BuildConfig.VERSION_CODE})"
 
