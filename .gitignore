@@ -41,3 +41,4 @@ ncmusic-release.keystore
 
 # ---- 构建产物：仓库根目录下的中间版本不入库（正式包在 releases/）----
 /NCMusic-*.apk
+/NCMusic-*-source.zip
