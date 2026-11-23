@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.toArgb
 import com.buddy.ncmusic.ui.components.rememberCoverColor
 import com.buddy.ncmusic.ui.theme.AppShapes
 import com.buddy.ncmusic.ui.theme.orAccent
+import com.buddy.ncmusic.util.isMetaLyric
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -69,13 +70,6 @@ private const val INDICATOR_FRACTION = 0.42f
 /** 滑动停止后隐藏指示线的延迟 */
 private const val HIDE_INDICATOR_DELAY_MS = 2600L
 
-/**
- * 元信息行（作词 / 作曲 / 编曲 / 制作人 …）。
- *
- * LRC 里这类行与正文混在一起，时间戳通常是最早的那几个，
- * 若不排除，歌曲开头会把它们当作"正在播放的歌词"高亮放大。
- */
-private val META_LINE = Regex("""^\s*(作词|作曲|编曲|制作人|出品|监制|混音|母带|录音|吉他|贝斯|鼓|键盘|和声|OP|SP)\s*[:：]""")
 
 /** 用户手动滑动后，多久恢复自动跟随（毫秒） */
 private const val FOLLOW_RESUME_DELAY_MS = 4000L
@@ -141,7 +135,8 @@ fun LyricScreen(onBack: () -> Unit) {
     // 列表中那一行被放大标红 —— 既不是歌词，也会让用户以为进度出错。
     // 判定标准：整行没有中文/日文正文之外的内容，形如「作词：xxx」。
     val lyricMeta = remember(lyrics) {
-        lyrics.map { META_LINE.containsMatchIn(it.text.trim()) }
+        // 与播放器页共用同一套判定，避免两边对"哪些行算元信息"看法不一致
+        lyrics.map { isMetaLyric(it.text) }
     }
 
     val currentIndex by remember(lyrics, lyricMeta) {

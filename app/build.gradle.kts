@@ -25,8 +25,8 @@ android {
         applicationId = "com.buddy.ncmusic"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 60
-        versionName = "1.4.0"
+        versionCode = 61
+        versionName = "1.4.1"
 
         vectorDrawables { useSupportLibrary = true }
     }

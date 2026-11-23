@@ -33,6 +33,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.AnimatedContent
 import com.buddy.ncmusic.ui.theme.AppShapes
+import com.buddy.ncmusic.util.isMetaLyric
 import com.buddy.ncmusic.ui.theme.contrastOn
 import com.buddy.ncmusic.ui.theme.orAccent
 import com.buddy.ncmusic.ui.util.Md3Motion
@@ -214,8 +215,20 @@ fun PlayerScreen(
     } else {
         null
     }
+    // 跳过元信息行（作词/作曲/编曲）：否则歌曲开头几秒，
+    // 预览区会把「作曲：银临」当成正在唱的歌词放大显示。
     val currentLyricIndex = remember(state.lyrics, state.position) {
-        state.lyrics.indexOfLast { it.time <= state.position }.coerceAtLeast(0)
+        if (state.lyrics.isEmpty()) {
+            0
+        } else {
+            var firstReal = state.lyrics.indexOfFirst { !isMetaLyric(it.text) }
+            if (firstReal < 0) firstReal = 0
+            var found = firstReal
+            state.lyrics.forEachIndexed { i, line ->
+                if (line.time <= state.position && !isMetaLyric(line.text)) found = i
+            }
+            found
+        }
     }
     val currentLine = state.lyrics.getOrNull(currentLyricIndex)?.text.orEmpty()
     val currentTranslation = state.lyrics.getOrNull(currentLyricIndex)?.translation.orEmpty()

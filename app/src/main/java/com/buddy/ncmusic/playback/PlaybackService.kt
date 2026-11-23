@@ -110,6 +110,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
+        // 用户从最近任务里划掉应用：先把进度落盘再决定是否退出服务。
+        //
+        // 这条回调**不保证一定发生**（系统直接杀进程时不会调），
+        // 所以进度主要靠 PlaybackManager 里的 5 秒周期落盘兜底，
+        // 这里只是把"最后一刻"的准确位置补上。
+        runCatching { PlaybackManager.persistSnapshotNow() }
         if (PlaybackManager.player.mediaItemCount == 0) stopSelf()
     }
 

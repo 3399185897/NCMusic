@@ -13,7 +13,15 @@ data class Song(
     val name: String = "",
     @JsonNames("ar", "artists") val artists: List<Artist> = emptyList(),
     @JsonNames("al", "album") val album: Album? = null,
-    val duration: Long = 0,
+    /**
+     * 时长（毫秒）。
+     *
+     * 网易云的列表接口用 `dt` 表示时长，只有少数接口才给 `duration` ——
+     * 此前只映射 `duration`，导致绝大多数列表里 Song.duration 恒为 0：
+     * 播放时看不出来（总时长由 ExoPlayer 上报），
+     * 但"恢复上次播放"这类离线场景一暴露，进度条就成了 00:39 / 00:00。
+     */
+    @JsonNames("dt") val duration: Long = 0,
     val fee: Int = 0,
     val mv: Long = 0,
     // ============================================================

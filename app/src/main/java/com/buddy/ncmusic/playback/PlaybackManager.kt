@@ -224,6 +224,32 @@ object PlaybackManager {
     @Volatile
     private var audioTrackRetried = false
 
+    /**
+     * 从快照恢复时记下的播放位置。
+     *
+     * 恢复的那一刻**不去解析音频地址**（会多一次网络请求，也会让启动变慢），
+     * 只把位置记在这里；等用户真正点了播放、地址解析完成后，
+     * 再 seek 到这个位置，实现"接着上次听"。
+     */
+    @Volatile
+    private var pendingResumePosition: Long = 0L
+
+    /**
+     * [pendingResumePosition] 属于哪首歌。
+     *
+     * 必须绑定歌曲：否则恢复后用户点了**另一首**，那首歌会从上一首的位置开播。
+     * （实测过：恢复 Ocean 到 118s，再点「普通女孩」，日志里 seek 成了
+     * `resumeAt=118665 limit=144352` —— 位置和时长都不是同一首歌的。）
+     */
+    @Volatile
+    private var pendingResumeSongId: Long = 0L
+
+    /** 供 Service 在 onTaskRemoved 时调用：立即落盘一次 */
+    fun persistSnapshotNow() = persistSnapshot()
+
+    /** 上次落盘进度的时刻（毫秒），用于节流 */
+    private var lastSnapshotAt = 0L
+
     /** 定时关闭任务 */
     private var sleepTimerJob: Job? = null
 
@@ -300,6 +326,12 @@ object PlaybackManager {
                     errorMessage = if (isPlaying) null else it.errorMessage,
                 )
             }
+            // 真正出声时才落盘：此刻 `player.currentPosition` 才是可信的。
+            //
+            // 不能在 playAt 里 seek 之后立刻存 —— 刚 seek 完、还没缓冲到该位置时
+            // `currentPosition` 会返回 0，一次"保存 0"就把刚恢复的位置抹掉了
+            // （实测：restore 14.8s → seek 14.8s → 立刻保存 0 → 下次从 0 开始）。
+            if (isPlaying) persistSnapshot(playing = true)
         }
 
         override fun onPlayerError(error: PlaybackException) {
@@ -395,6 +427,65 @@ object PlaybackManager {
         }
     }
 
+    /**
+     * 从磁盘快照恢复「上次听到哪」。
+     *
+     * 只恢复**记忆**（队列、当前曲、进度），不解析地址、不自动播放：
+     *  · 解析地址需要联网，恢复时做会让启动变慢并白耗流量；
+     *  · 自动播放会在静音场合（会议、深夜）突然出声。
+     * 用户点一下播放，[pendingResumePosition] 会让它从原位置继续。
+     *
+     * 已经存在播放队列时直接返回，避免把用户当下的操作覆盖掉。
+     */
+    fun restoreFromSnapshot() {
+        if (_queue.isNotEmpty() || _state.value.song != null) return
+        val snap = PlaybackSnapshotStore.load(appContext) ?: return
+        val song = snap.queue.getOrNull(snap.index) ?: return
+
+        _queue.clear()
+        _queue.addAll(snap.queue)
+        currentIndex = snap.index
+        pendingResumePosition = snap.positionMs
+        pendingResumeSongId = song.id
+        lastSnapshotAt = System.currentTimeMillis()
+
+        android.util.Log.i(
+            "PlaybackSnapshot",
+            "restore song=${song.name} idx=${snap.index} pos=${snap.positionMs} dur=${song.duration}",
+        )
+        _state.update {
+            it.copy(
+                song = song,
+                lyrics = emptyList(),
+                position = snap.positionMs,
+                duration = song.duration,
+                isPlaying = false,
+                isLoading = false,
+                errorMessage = null,
+            )
+        }
+    }
+
+    /**
+     * 把当前队列与进度写入快照。
+     *
+     * @param playing 覆盖"是否正在播放"；null 表示按当前状态推断
+     */
+    private fun persistSnapshot(playing: Boolean? = null) {
+        val s = _state.value
+        val song = s.song ?: return
+        if (_queue.isEmpty() || currentIndex !in _queue.indices) return
+        if (_queue[currentIndex].id != song.id) return
+        PlaybackSnapshotStore.save(
+            context = appContext,
+            queue = _queue.toList(),
+            index = currentIndex,
+            positionMs = if (::player.isInitialized) player.currentPosition else s.position,
+            wasPlaying = playing ?: s.isPlaying,
+        )
+        lastSnapshotAt = System.currentTimeMillis()
+    }
+
     fun ensureInit() {
         if (::player.isInitialized) return
         createPlayer()
@@ -405,6 +496,21 @@ object PlaybackManager {
                 val s = _state.value
                 if (::player.isInitialized && player.isPlaying && !s.isLoading) {
                     _state.update { it.copy(position = player.currentPosition) }
+
+                    // 每 5 秒把进度落一次盘。
+                    // 不能只在 onTaskRemoved 里存：用户从最近任务里"清掉"进程时，
+                    // 系统可能直接杀进程而不回调 onTaskRemoved（鸿蒙上尤其如此），
+                    // 那种情况下只有周期性落盘能保住进度。
+                    val now = System.currentTimeMillis()
+                    if (now - lastSnapshotAt >= 5_000L) {
+                        lastSnapshotAt = now
+                        PlaybackSnapshotStore.savePosition(
+                            appContext,
+                            player.currentPosition,
+                            wasPlaying = true,
+                        )
+                    }
+
                     pendingListenMs += 500L
                     if (pendingListenMs >= 30_000L) {
                         val sec = pendingListenMs / 1000
@@ -470,6 +576,13 @@ object PlaybackManager {
             }
             return
         }
+
+        // 用户主动点歌 = 从头播，不吃"上次听到哪"。
+        //
+        // 只有"恢复后点播放/悬浮岛"这条路径才该续播；否则从列表里点一首
+        // 上次听过的歌，会莫名其妙从中间开始。
+        pendingResumePosition = 0L
+        pendingResumeSongId = 0L
 
         _queue.clear()
         _queue.addAll(songs)
@@ -574,8 +687,30 @@ object PlaybackManager {
                     }
 
                     player.stop()
-                    player.setMediaItem(MediaItem.fromUri(uri))
+
+                    // 接着上次听。
+                    //
+                    // 两个要点：
+                    //  1. 位置必须属于**同一首歌**（pendingResumeSongId），否则用户点
+                    //     别的歌时会从上一首的进度开始播。
+                    //  2. 用 `setMediaItem(item, startPositionMs)` 而不是
+                    //     prepare() 之后再 seekTo —— 后者在刚 prepare、还没缓冲到
+                    //     目标位置时会被忽略，实测表现为"恢复了 118 秒却从 0 开始播"。
+                    val sameSong = pendingResumeSongId != 0L && pendingResumeSongId == song.id
+                    val resumeAt = if (sameSong) pendingResumePosition else 0L
+                    pendingResumePosition = 0L
+                    pendingResumeSongId = 0L
+
+                    val limit = song.duration
+                    val startPos = if (resumeAt > 0L && (limit <= 0L || resumeAt < limit - 3_000L)) {
+                        android.util.Log.i("PlaybackSnapshot", "resume song=${song.name} at=$resumeAt limit=$limit")
+                        resumeAt
+                    } else {
+                        0L
+                    }
+                    player.setMediaItem(MediaItem.fromUri(uri), startPos)
                     player.prepare()
+                    if (startPos > 0L) _state.update { it.copy(position = startPos) }
                     true
                 }.getOrElse { e ->
                     if (e is kotlinx.coroutines.CancellationException) throw e
@@ -875,6 +1010,14 @@ object PlaybackManager {
         // 从而保证"暂停"不会被随后返回的网络响应覆盖。
         desiredPlaying = shouldPlay
 
+        // 从快照恢复后，player 里**还没有任何媒体项** ——
+        // 此时 player.play() 是空转，界面会停在"暂停"让人以为按钮坏了。
+        // 必须先走一次完整的加载流程（解析地址 → prepare → seek 到上次位置）。
+        if (shouldPlay && player.mediaItemCount == 0 && currentIndex in _queue.indices) {
+            playAt(currentIndex)
+            return
+        }
+
         val ps = appContext.userPreferences
         if (shouldPlay) {
             // 恢复播放：淡入，避免起播爆音
@@ -893,6 +1036,8 @@ object PlaybackManager {
                 if (ms > 0) fadeVolume(1f, 0f, ms)
                 player.pause()
                 player.volume = 1f
+                // 暂停是"最可能被杀进程"的时刻，顺手落一次盘
+                persistSnapshot(playing = false)
             }
         }
         // ⚠️ 不在这里写 isPlaying。
